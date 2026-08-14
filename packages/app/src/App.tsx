@@ -12,13 +12,20 @@ import { createEmptyDocument, computeDerivedModel, type HarnessDocument, type Di
 import { importVendorJson, serializeDocument, parseDocument, bomToCsv, type RawHarnessDocument } from '@openharness/io';
 import { useHarnessStore } from './useHarnessStore.js';
 import { SchematicCanvas } from './SchematicCanvas.js';
+import { theme } from './theme.js';
 
 type Tab = 'schematic' | 'overview';
 
 const SEVERITY_COLOR: Record<DiagnosticSeverity, string> = {
-  error: '#d92d20',
-  warning: '#b54708',
-  info: '#175cd3',
+  error: theme.color.danger,
+  warning: theme.color.warning,
+  info: theme.color.info,
+};
+
+const SEVERITY_BG: Record<DiagnosticSeverity, string> = {
+  error: theme.color.dangerSoft,
+  warning: theme.color.warningSoft,
+  info: theme.color.infoSoft,
 };
 
 export function App() {
@@ -117,37 +124,61 @@ export function App() {
   }, [store]);
 
   const derived = store ? computeDerivedModel(store.doc) : null;
+  const errorCount = derived?.diagnostics.filter((d) => d.severity === 'error').length ?? 0;
 
   return (
     <div style={styles.shell}>
       <header style={styles.toolbar}>
-        <strong style={{ marginRight: 16 }}>OpenHarness</strong>
-        <button style={styles.button} disabled={busy} onClick={newDocument}>New</button>
-        <button style={styles.button} disabled={busy} onClick={() => void load('vendor-json')}>Import vendor JSON…</button>
-        <button style={styles.button} disabled={busy} onClick={() => void load('ohd')}>Open .ohd…</button>
-        <button style={styles.button} disabled={!store} onClick={() => void saveOhd()}>Save as .ohd…</button>
-        <button style={styles.button} disabled={!store} onClick={() => void exportBom()}>Export BOM CSV…</button>
+        <div style={styles.brand}>
+          <div style={styles.brandMark}>OH</div>
+          <strong style={styles.brandName}>OpenHarness</strong>
+        </div>
+
+        <div style={styles.toolbarGroup}>
+          <button style={styles.button} disabled={busy} onClick={newDocument}>New</button>
+          <button style={styles.button} disabled={busy} onClick={() => void load('vendor-json')}>Import the reference tool…</button>
+          <button style={styles.button} disabled={busy} onClick={() => void load('ohd')}>Open .ohd…</button>
+          <button style={styles.buttonPrimary} disabled={!store} onClick={() => void saveOhd()}>Save as .ohd…</button>
+          <button style={styles.button} disabled={!store} onClick={() => void exportBom()}>Export BOM CSV…</button>
+        </div>
+
         {store && (
-          <>
-            <span style={styles.divider} />
-            <button style={styles.tabButton(tab === 'schematic')} onClick={() => setTab('schematic')}>Schematic</button>
-            <button style={styles.tabButton(tab === 'overview')} onClick={() => setTab('overview')}>
-              Overview{derived && derived.diagnostics.length > 0 ? ` (${derived.diagnostics.length})` : ''}
+          <div style={styles.tabGroup}>
+            <button style={styles.tabButton(tab === 'schematic')} onClick={() => setTab('schematic')}>
+              Schematic
             </button>
-          </>
+            <button style={styles.tabButton(tab === 'overview')} onClick={() => setTab('overview')}>
+              Overview
+              {derived && derived.diagnostics.length > 0 && (
+                <span style={styles.tabBadge(errorCount > 0)}>{derived.diagnostics.length}</span>
+              )}
+            </button>
+          </div>
         )}
-        {sourcePath && <span style={styles.path}>{sourcePath}</span>}
+
+        <div style={styles.toolbarSpacer} />
+        {sourcePath && <span style={styles.path} title={sourcePath}>{shortenPath(sourcePath)}</span>}
       </header>
 
-      {error && <div style={styles.errorBanner}>{error}</div>}
+      {error && (
+        <div style={styles.errorBanner}>
+          <span style={styles.errorBannerText}>{error}</span>
+          <button style={styles.errorBannerDismiss} onClick={() => setError(null)}>Dismiss</button>
+        </div>
+      )}
 
       {!store ? (
         <div style={styles.empty}>
-          <p>No document open.</p>
-          <p style={{ color: '#666', fontSize: 13 }}>
+          <div style={styles.emptyMark}>OH</div>
+          <h2 style={styles.emptyTitle}>No document open</h2>
+          <p style={styles.emptyBody}>
             Start a new harness, import a the reference tool export, or open a previously-saved .ohd
-            file.
+            file to begin.
           </p>
+          <div style={styles.emptyActions}>
+            <button style={styles.buttonPrimary} onClick={newDocument}>New harness</button>
+            <button style={styles.button} onClick={() => void load('vendor-json')}>Import the reference tool…</button>
+          </div>
         </div>
       ) : tab === 'schematic' ? (
         <div style={{ flex: 1, minHeight: 0 }}>
@@ -159,12 +190,12 @@ export function App() {
             <h3 style={styles.panelTitle}>Document</h3>
             <table style={styles.kvTable}>
               <tbody>
-                <tr><td>Name</td><td>{store.doc.meta.name}</td></tr>
-                <tr><td>Components</td><td>{Object.keys(store.doc.components).length}</td></tr>
-                <tr><td>Wires</td><td>{Object.keys(store.doc.wires).length}</td></tr>
-                <tr><td>Bundles</td><td>{Object.keys(store.doc.bundles).length}</td></tr>
-                <tr><td>Nets</td><td>{derived!.nets.length}</td></tr>
-                <tr><td>Parts</td><td>{Object.keys(store.doc.parts).length}</td></tr>
+                <tr><td style={styles.kvKey}>Name</td><td style={styles.kvVal}>{store.doc.meta.name}</td></tr>
+                <tr><td style={styles.kvKey}>Components</td><td style={styles.kvVal}>{Object.keys(store.doc.components).length}</td></tr>
+                <tr><td style={styles.kvKey}>Wires</td><td style={styles.kvVal}>{Object.keys(store.doc.wires).length}</td></tr>
+                <tr><td style={styles.kvKey}>Bundles</td><td style={styles.kvVal}>{Object.keys(store.doc.bundles).length}</td></tr>
+                <tr><td style={styles.kvKey}>Nets</td><td style={styles.kvVal}>{derived!.nets.length}</td></tr>
+                <tr><td style={styles.kvKey}>Parts</td><td style={styles.kvVal}>{Object.keys(store.doc.parts).length}</td></tr>
               </tbody>
             </table>
             {importWarnings.length > 0 && (
@@ -178,16 +209,18 @@ export function App() {
           <section style={styles.panel}>
             <h3 style={styles.panelTitle}>Diagnostics ({derived!.diagnostics.length})</h3>
             {derived!.diagnostics.length === 0 ? (
-              <p style={{ color: '#666' }}>No diagnostics.</p>
+              <p style={styles.mutedNote}>No diagnostics — this document is clean.</p>
             ) : (
               <table style={styles.table}>
-                <thead><tr><th>Severity</th><th>Rule</th><th>Message</th></tr></thead>
+                <thead><tr><th style={styles.th}>Severity</th><th style={styles.th}>Rule</th><th style={styles.th}>Message</th></tr></thead>
                 <tbody>
                   {derived!.diagnostics.map((d, i) => (
                     <tr key={i}>
-                      <td style={{ color: SEVERITY_COLOR[d.severity], fontWeight: 600 }}>{d.severity}</td>
-                      <td>{d.ruleId}</td>
-                      <td>{d.message}</td>
+                      <td style={styles.td}>
+                        <span style={styles.severityChip(d.severity)}>{d.severity}</span>
+                      </td>
+                      <td style={{ ...styles.td, color: theme.color.textFaint, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{d.ruleId}</td>
+                      <td style={styles.td}>{d.message}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -197,17 +230,24 @@ export function App() {
 
           <section style={styles.panel}>
             <h3 style={styles.panelTitle}>BOM ({derived!.bom.length} lines)</h3>
-            <table style={styles.table}>
-              <thead><tr><th>Part Number</th><th>Manufacturer</th><th>Qty</th><th>Unit</th><th>Refdes</th></tr></thead>
-              <tbody>
-                {derived!.bom.map((line, i) => (
-                  <tr key={i}>
-                    <td>{line.partNumber}</td><td>{line.manufacturer}</td><td>{line.quantity}</td><td>{line.unit}</td>
-                    <td>{line.refdes.join(', ')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {derived!.bom.length === 0 ? (
+              <p style={styles.mutedNote}>No BOM lines yet.</p>
+            ) : (
+              <table style={styles.table}>
+                <thead><tr><th style={styles.th}>Part Number</th><th style={styles.th}>Manufacturer</th><th style={styles.th}>Qty</th><th style={styles.th}>Unit</th><th style={styles.th}>Refdes</th></tr></thead>
+                <tbody>
+                  {derived!.bom.map((line, i) => (
+                    <tr key={i}>
+                      <td style={styles.td}>{line.partNumber}</td>
+                      <td style={styles.td}>{line.manufacturer}</td>
+                      <td style={styles.td}>{line.quantity}</td>
+                      <td style={styles.td}>{line.unit}</td>
+                      <td style={{ ...styles.td, color: theme.color.textFaint }}>{line.refdes.join(', ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </section>
         </div>
       )}
@@ -215,23 +255,92 @@ export function App() {
   );
 }
 
+function shortenPath(path: string): string {
+  if (path.length <= 56) return path;
+  return `…${path.slice(-53)}`;
+}
+
 const styles = {
-  shell: { fontFamily: 'system-ui, sans-serif', height: '100vh', display: 'flex', flexDirection: 'column' },
-  toolbar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: '1px solid #e0e0e0' },
-  divider: { width: 1, height: 20, background: '#e0e0e0', margin: '0 4px' },
-  button: { padding: '6px 12px', border: '1px solid #ccc', borderRadius: 4, background: '#fff', cursor: 'pointer' },
+  shell: {
+    fontFamily: '-apple-system, "Segoe UI", system-ui, sans-serif', height: '100vh',
+    display: 'flex', flexDirection: 'column', color: theme.color.textStrong, background: theme.color.canvasBg,
+    fontSize: 14,
+  },
+  toolbar: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
+    borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexWrap: 'wrap',
+  },
+  brand: { display: 'flex', alignItems: 'center', gap: 8, marginRight: 6 },
+  brandMark: {
+    width: 24, height: 24, borderRadius: 6, background: theme.color.accent, color: '#fff',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, letterSpacing: 0.2,
+  },
+  brandName: { fontSize: 14.5, fontWeight: 600, letterSpacing: -0.1 },
+  toolbarGroup: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  toolbarSpacer: { flex: 1 },
+  tabGroup: { display: 'flex', alignItems: 'center', gap: 2, background: theme.color.canvasBg, padding: 3, borderRadius: 8, border: `1px solid ${theme.color.border}` },
+  button: {
+    padding: '6px 12px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control,
+    background: theme.color.surface, color: theme.color.textStrong, cursor: 'pointer', fontSize: 13, fontWeight: 500,
+  },
+  buttonPrimary: {
+    padding: '6px 12px', border: `1px solid ${theme.color.accent}`, borderRadius: theme.radius.control,
+    background: theme.color.accent, color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+  },
   tabButton: (active: boolean) => ({
-    padding: '6px 12px', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer',
-    background: active ? '#175cd3' : '#fff', color: active ? '#fff' : '#000',
+    padding: '6px 14px', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 500,
+    background: active ? theme.color.surface : 'transparent',
+    color: active ? theme.color.textStrong : theme.color.textMuted,
+    boxShadow: active ? theme.shadow.panel : 'none',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   }),
-  path: { marginLeft: 'auto', color: '#666', fontSize: 12 },
-  errorBanner: { background: '#fef3f2', color: '#b42318', padding: '8px 16px', borderBottom: '1px solid #fecdca' },
-  empty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 32 },
-  content: { flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 20 },
-  panel: { border: '1px solid #e0e0e0', borderRadius: 6, padding: 16 },
-  panelTitle: { margin: '0 0 12px 0', fontSize: 14 },
-  panelSubtitle: { margin: '12px 0 6px 0', fontSize: 13, color: '#666' },
-  kvTable: { borderCollapse: 'collapse', fontSize: 13 },
+  tabBadge: (danger: boolean) => ({
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 16, height: 16,
+    padding: '0 4px', borderRadius: 8, fontSize: 10.5, fontWeight: 700,
+    background: danger ? theme.color.dangerSoft : theme.color.warningSoft,
+    color: danger ? theme.color.danger : theme.color.warning,
+  }),
+  path: { color: theme.color.textFaint, fontSize: 12, fontFamily: 'ui-monospace, monospace' },
+  errorBanner: {
+    display: 'flex', alignItems: 'center', gap: 12, background: theme.color.dangerSoft, color: theme.color.danger,
+    padding: '8px 16px', borderBottom: `1px solid ${theme.color.dangerBorder}`, fontSize: 13,
+  },
+  errorBannerText: { flex: 1 },
+  errorBannerDismiss: {
+    border: 'none', background: 'transparent', color: theme.color.danger, cursor: 'pointer',
+    fontSize: 12, fontWeight: 600, textDecoration: 'underline', padding: 0,
+  },
+  empty: {
+    flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+    textAlign: 'center', padding: 32, gap: 4,
+  },
+  emptyMark: {
+    width: 52, height: 52, borderRadius: 14, background: theme.color.accentSoft, color: theme.color.accent,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700, marginBottom: 12,
+  },
+  emptyTitle: { margin: 0, fontSize: 17, fontWeight: 600, color: theme.color.textStrong },
+  emptyBody: { color: theme.color.textMuted, fontSize: 13.5, maxWidth: 360, margin: '4px 0 20px 0', lineHeight: 1.5 },
+  emptyActions: { display: 'flex', gap: 8 },
+  content: { flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 900, margin: '0 auto', width: '100%', boxSizing: 'border-box' },
+  panel: {
+    border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.panel, padding: 18,
+    background: theme.color.surface, boxShadow: theme.shadow.panel,
+  },
+  panelTitle: { margin: '0 0 14px 0', fontSize: 13.5, fontWeight: 600, color: theme.color.textStrong },
+  panelSubtitle: { margin: '14px 0 6px 0', fontSize: 12.5, color: theme.color.textMuted, fontWeight: 600 },
+  kvTable: { borderCollapse: 'collapse', fontSize: 13, width: '100%' },
+  kvKey: { color: theme.color.textFaint, padding: '4px 12px 4px 0', fontWeight: 500 },
+  kvVal: { color: theme.color.textStrong, padding: '4px 0', fontWeight: 500 },
   table: { borderCollapse: 'collapse', width: '100%', fontSize: 13 },
-  list: { margin: 0, paddingLeft: 20, fontSize: 12, color: '#b54708' },
-} satisfies Record<string, React.CSSProperties | ((active: boolean) => React.CSSProperties)>;
+  th: {
+    textAlign: 'left', padding: '6px 10px', fontSize: 11, fontWeight: 600, color: theme.color.textFaint,
+    textTransform: 'uppercase', letterSpacing: 0.3, borderBottom: `1px solid ${theme.color.border}`,
+  },
+  td: { padding: '8px 10px', borderBottom: `1px solid ${theme.color.border}`, color: theme.color.textStrong },
+  severityChip: (severity: DiagnosticSeverity) => ({
+    display: 'inline-block', padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600,
+    color: SEVERITY_COLOR[severity], background: SEVERITY_BG[severity], textTransform: 'capitalize' as const,
+  }),
+  mutedNote: { color: theme.color.textMuted, fontSize: 13, margin: 0 },
+  list: { margin: 0, paddingLeft: 20, fontSize: 12, color: theme.color.warning },
+} satisfies Record<string, React.CSSProperties | ((...args: never[]) => React.CSSProperties)>;

@@ -1,4 +1,20 @@
 * { box-sizing: border-box; }
-body { margin: 0; }
-table th, table td { border-bottom: 1px solid #eee; padding: 4px 8px; text-align: left; }
-table th { color: #666; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button, input, select, textarea { font-family: inherit; }
+button { transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease; }
+button:hover:not(:disabled) { filter: brightness(0.97); }
+button:active:not(:disabled) { filter: brightness(0.93); }
+button:disabled { opacity: 0.5; cursor: default; }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #2f6fed;
+  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.15);
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #d4d7dd; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
