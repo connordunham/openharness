@@ -12,7 +12,7 @@
  * instead of growing a new IPC channel per feature.
  */
 
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -92,6 +92,14 @@ ipcMain.handle('saveFile', async (event, options: SaveFileOptions): Promise<stri
 });
 
 void app.whenReady().then(() => {
+  // No custom menu is built (the toolbar covers every command this app
+  // needs), but leaving Electron's *default* menu in place is worse than
+  // no menu: its Edit role binds Ctrl+Z/Ctrl+Shift+Z/Ctrl+Y to Chromium's
+  // native webContents.undo()/redo() and swallows the keystroke before our
+  // own keydown listener (App.tsx) ever sees it — the GUI's Ctrl+Z appeared
+  // to silently do nothing. Caught only by actually pressing Ctrl+Z in the
+  // running app and watching it not work; no unit test would catch this.
+  Menu.setApplicationMenu(null);
   createWindow();
 
   app.on('activate', () => {

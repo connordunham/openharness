@@ -55,4 +55,19 @@ describe('HarnessStore scaffold', () => {
     expect(store.derived.nets).toEqual([]);
     expect(store.derived.bom).toEqual([]);
   });
+
+  it('undo() and redo() emit transaction:committed, so subscribers (GUI, automations) see them', () => {
+    const store = new HarnessStore(createEmptyDocument());
+    const events: string[] = [];
+    store.on('transaction:committed', (e) => events.push(e.label));
+
+    store.transact('Add connector', (draft) => {
+      draft.components['c1'] = { id: 'c1', type: 'connector', refdes: 'C1', cavities: [], custom: {} };
+    });
+    store.undo();
+    store.redo();
+
+    expect(events).toEqual(['Add connector', 'Undo: Add connector', 'Redo: Add connector']);
+    expect(store.doc.components['c1']).toBeDefined();
+  });
 });

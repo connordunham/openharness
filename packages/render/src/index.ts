@@ -1,9 +1,9 @@
 /**
- * @openharness/render — pure SVG scene builders for the Schematic and Layout
- * views (spec §5.1, §7.2, §7.3). No DOM dependency: builders return scene
- * descriptions the React app (or the PDF exporter in @openharness/io) can
- * render, so the same code produces the on-screen canvas and the PDF export.
+ * @openharness/render — pure scene builders for the Schematic and Layout
+ * views (spec §5.1, §7.2, §7.3). No DOM dependency.
  *
- * SCAFFOLDING — Phase 2 work (spec §12). Not implemented yet.
+ * IMPLEMENTED: computeSchematicScene (spec §7.2).
+ * TODO (Phase 2/3): computeLayoutScene, PDF-ready path/text output for the
+ * eventual PDF exporter (spec §9).
  */
-export {};
+export * from './schematicScene.js';

@@ -155,6 +155,16 @@ export class HarnessStore {
     this._doc = produce(this._doc, (draft) => applyPatches(draft, entry.inversePatches));
     this.dirty = true;
     this.redoStack.push(entry);
+    // Undo/redo previously mutated state with no event at all — any
+    // subscriber (the GUI's re-render, or an automation watching for
+    // changes) had no way to know Ctrl+Z had happened. Emitting the same
+    // event a normal transact() does keeps undo/redo indistinguishable
+    // from any other document change to everything downstream.
+    this.bus.emit('transaction:committed', {
+      label: `Undo: ${entry.label}`,
+      patches: entry.inversePatches,
+      revision: this._doc.meta.revision,
+    });
   }
 
   redo(): void {
@@ -163,6 +173,11 @@ export class HarnessStore {
     this._doc = produce(this._doc, (draft) => applyPatches(draft, entry.patches));
     this.dirty = true;
     this.undoStack.push(entry);
+    this.bus.emit('transaction:committed', {
+      label: `Redo: ${entry.label}`,
+      patches: entry.patches,
+      revision: this._doc.meta.revision,
+    });
   }
 
   on<E extends EventName>(event: E, handler: HarnessEvents[E]): Unsubscribe {
