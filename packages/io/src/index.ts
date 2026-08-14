@@ -1,9 +1,13 @@
 /**
  * @openharness/io — load/save, format migrations, and every export/import
- * path (spec §9, §11): Schematic/Layout PDF, wiring-table XLSX, BOM CSV,
- * WireViz YAML, vendor JSON import, KiCad/CSV netlist import.
+ * path (spec §9, §11).
  *
- * SCAFFOLDING — Phase 1 (import + validate CLI path) then Phase 6 (exports)
- * per the build plan (spec §12). Not implemented yet.
+ * IMPLEMENTED: vendor wire-format v0.8 JSON import (spec §11), tested against
+ * both real captured exports (see src/__tests__/fixtures/).
+ *
+ * SCAFFOLDING / TODO: Schematic/Layout PDF, wiring-table XLSX, BOM CSV,
+ * WireViz YAML export, KiCad/CSV netlist import, `.ohd` load/save (Phase 1
+ * for import + validate CLI path, Phase 6 for exports per spec §12).
  */
-export {};
+export * from './vendorRawFormat.js';
+export * from './importVendorJson.js';

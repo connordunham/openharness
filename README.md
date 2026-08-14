@@ -34,9 +34,19 @@ first implementation didn't exclude the wire being routed from its own
 splice's neighbour vote, which made otherwise-unambiguous splices look
 falsely ambiguous.
 
-Everything else — rendering, exports, the automation host, the CLI's actual
-command logic, the MCP server — is still a placeholder pointing at the spec
-section it implements. See `HARNESS-DESIGNER-SPEC.md` §12 for the phase plan.
+`@openharness/io` now has a working vendor wire-format v0.8 JSON importer
+(`importVendorJson.ts`, spec §11), tested against both real captured
+exports — not synthetic data. 16 tests pass, including running the full
+`computeDerivedModel` pipeline end-to-end on the real reference document
+(3 connectors, 1 splice, 1 resistor, 2 twisted wires, a global signal) without
+throwing. This is the first point where the whole stack — import, net
+extraction, routing, length, BOM, DRC — has run against real evidence rather
+than hand-built test fixtures.
+
+Everything else — rendering, exports (PDF/XLSX/CSV/WireViz), the automation
+host, the CLI's actual command logic, the MCP server, `.ohd` load/save — is
+still a placeholder pointing at the spec section it implements. See
+`HARNESS-DESIGNER-SPEC.md` §12 for the phase plan.
 
 ## Layout
 

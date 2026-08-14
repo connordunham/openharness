@@ -1,0 +1,55 @@
+{
+  "version": 0.8,
+  "lengthUnit": "mm",
+  "connectors": [
+    {
+      "id": "vyBqwG",
+      "cavities": [
+        { "id": "lxF0Bp" },
+        { "id": "N5hqhu" }
+      ],
+      "schematicPosition": { "x": 120, "y": 120 },
+      "coveringIds": [
+        "pKkzjEdd7TVUvddJ31uLc"
+      ]
+    }
+  ],
+  "terminals": [
+    {
+      "id": "wBS56E",
+      "type": "Ring",
+      "schematicPosition": { "x": 120, "y": 330 }
+    }
+  ],
+  "cables": [
+    {
+      "id": "_COBvJ",
+      "schematicPosition": { "x": 270, "y": 180 },
+      "cores": [
+        { "id": "59qHnV", "color": "Red" },
+        { "id": "dVYDyM", "color": "Orange" }
+      ],
+      "shield": { "id": "8U5vCT", "color": "Shield" }
+    }
+  ],
+  "schematicNotes": [
+    {
+      "id": "UB6426",
+      "schematicPosition": { "x": 527.5, "y": -46 },
+      "text": "Kitchen sink test note"
+    }
+  ],
+  "branchPoints": [
+    {
+      "id": "L6l9tT",
+      "layoutPosition": { "x": 210, "y": 450 }
+    }
+  ],
+  "coveringParts": [
+    {
+      "id": "pKkzjEdd7TVUvddJ31uLc",
+      "type": "HeatShrink",
+      "partNumber": "HS-3-BLK"
+    }
+  ]
+}

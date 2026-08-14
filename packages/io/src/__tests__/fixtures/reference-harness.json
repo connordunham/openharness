@@ -1,0 +1,212 @@
+{
+  "version": 0.8,
+  "lengthUnit": "mm",
+  "wires": [
+    {
+      "id": "mwFnjo",
+      "color": "Red",
+      "source": {
+        "id": "Lznc2V",
+        "handle": "p-IS2b"
+      },
+      "target": {
+        "id": "gjuazh",
+        "handle": "nDk1xl"
+      }
+    },
+    {
+      "id": "gFmdpt",
+      "color": "Orange",
+      "source": {
+        "id": "wuPGQg",
+        "handle": "Right"
+      },
+      "target": {
+        "id": "gjuazh",
+        "handle": "1d5PTZ"
+      }
+    },
+    {
+      "id": "-rSCOf",
+      "color": "Yellow",
+      "source": {
+        "id": "Lznc2V",
+        "handle": "URrwpV"
+      },
+      "target": {
+        "id": "gjuazh",
+        "handle": "gGRgXZ"
+      }
+    },
+    {
+      "id": "M0ImL7",
+      "color": "Red",
+      "source": {
+        "id": "Lznc2V",
+        "handle": "l5ZEde"
+      },
+      "target": {
+        "id": "YXRkBA",
+        "handle": "Splice"
+      },
+      "stripeColor": "Orange"
+    },
+    {
+      "id": "J9-naJ",
+      "color": "Red",
+      "source": {
+        "id": "YXRkBA",
+        "handle": "Splice"
+      },
+      "target": {
+        "id": "gjuazh",
+        "handle": "wIoqnZ"
+      }
+    },
+    {
+      "id": "X70X3J",
+      "color": "Red",
+      "source": {
+        "id": "ZWfYpO",
+        "handle": "xfjGEQ"
+      },
+      "target": {
+        "id": "YXRkBA",
+        "handle": "Splice"
+      }
+    },
+    {
+      "id": "w5EqnS",
+      "color": "Red",
+      "source": {
+        "id": "ZWfYpO",
+        "handle": "xfjGEQ"
+      },
+      "target": {
+        "id": "gjuazh",
+        "handle": "94gNqp"
+      }
+    },
+    {
+      "id": "3cOGZ-",
+      "color": "Orange",
+      "source": {
+        "id": "gjuazh",
+        "handle": "FDNI2T"
+      },
+      "target": {
+        "id": "ZWfYpO",
+        "handle": "_blVGl"
+      }
+    },
+    {
+      "id": "Z8Vl6H",
+      "color": "Orange",
+      "source": {
+        "id": "ZWfYpO",
+        "handle": "_blVGl"
+      },
+      "target": {
+        "id": "Lznc2V",
+        "handle": "yXM3Z0"
+      }
+    }
+  ],
+  "connectors": [
+    {
+      "id": "gjuazh",
+      "label": "501646120",
+      "cavities": [
+        { "id": "nDk1xl" },
+        { "id": "1d5PTZ" },
+        { "id": "gGRgXZ" },
+        { "id": "wT9LNe" },
+        { "id": "94gNqp" },
+        { "id": "FDNI2T" },
+        { "id": "h7HYSW" },
+        { "id": "VsW3Lc" },
+        { "id": "wIoqnZ" }
+      ],
+      "layoutPosition": { "x": 180, "y": -120 },
+      "schematicPosition": { "x": 60, "y": 0 }
+    },
+    {
+      "id": "Lznc2V",
+      "label": "J8",
+      "partId": "tjU7wROfiqJTnS2LJStUw",
+      "cavities": [
+        { "id": "p-IS2b", "signal": "fg" },
+        { "id": "haEYec", "global": true, "signal": "sddsfgshg" },
+        { "id": "a-MdBc", "signal": "dhfgsd" },
+        { "id": "URrwpV", "signal": "shg" },
+        { "id": "yXM3Z0", "signal": "s" },
+        { "id": "_WAj51", "signal": "gshhh" },
+        { "id": "0Ginhb", "signal": "shdd" },
+        { "id": "_7zwJT", "signal": "sdhg" },
+        { "id": "l5ZEde" },
+        { "id": "kD7jPI", "signal": "shg" },
+        { "id": "G83ryV", "signal": "s" },
+        { "id": "mqThz0", "signal": "hg" },
+        { "id": "hrqCeG", "signal": "sgh" },
+        { "id": "S2qysI" }
+      ],
+      "schematicPosition": { "x": 990, "y": -60 }
+    },
+    {
+      "id": "ZWfYpO",
+      "cavities": [
+        { "id": "xfjGEQ" },
+        { "id": "_blVGl" }
+      ],
+      "schematicPosition": { "x": 450, "y": 120 }
+    }
+  ],
+  "twistedWires": [
+    {
+      "id": "aZffdH",
+      "wires": [
+        {
+          "id": "rf3by_",
+          "color": "Blue",
+          "source": { "id": "Lznc2V", "handle": "_WAj51" },
+          "target": { "id": "gjuazh", "handle": "h7HYSW" }
+        },
+        {
+          "id": "yAO7T4",
+          "color": "Violet",
+          "source": { "id": "Lznc2V", "handle": "0Ginhb" },
+          "target": { "id": "gjuazh", "handle": "VsW3Lc" }
+        }
+      ],
+      "schematicPosition": { "x": 990, "y": 180 }
+    }
+  ],
+  "bundles": [
+    { "id": "jBSCwN", "sourceId": "gjuazh", "targetId": "Lznc2V" }
+  ],
+  "splices": [
+    { "id": "YXRkBA", "schematicPosition": { "x": 540, "y": 240 } }
+  ],
+  "resistors": [
+    {
+      "id": "wuPGQg",
+      "partId": "_lvZAR",
+      "layoutPosition": { "x": 450, "y": -30 },
+      "schematicPosition": { "x": 600, "y": 60 }
+    }
+  ],
+  "resistorParts": [
+    { "id": "_lvZAR" }
+  ],
+  "connectorParts": [
+    {
+      "id": "tjU7wROfiqJTnS2LJStUw",
+      "partNumber": "501646120",
+      "manufacturer": "Molex",
+      "configurations": [
+        { "id": "2nvYXGSZPAP-HK8TZpKy2" }
+      ],
+      "numberOfCavities": 1
+    }
+  ]
+}

@@ -1,23 +1,27 @@
 # Fixtures
 
 Golden-file test documents (spec §13). The two real exports captured during
-research live in the project folder one level up:
+research live in the project folder one level up (`_reference_harness_export.json`,
+`_kitchen_sink_export.json`) and are also copied into
+`packages/io/src/__tests__/fixtures/` where `importVendorJson.test.ts`
+actually exercises them — that importer (spec §11) is now implemented and
+tested against both, including running the full `@openharness/core` derive
+pipeline (net extraction → routing → length → BOM → DRC) end-to-end on the
+real reference document without throwing.
 
-- `_reference_harness_export.json` — a real user document (the reference tool wire
-  format v0.8): 9 wires, 2 twisted, 3 connectors, 1 splice, 1 resistor.
-- `_kitchen_sink_export.json` — a synthetic document built to exercise entity
-  types the first document didn't: cable + shield, covering, terminal, note,
-  branch point.
+The R12 splice-host-resolution case (a chain of two unplaced splices between
+two placed connectors) is now covered too, as a hand-built fixture in
+`packages/core/src/__tests__/routing.test.ts` rather than something exported
+from the live app — it caught a real bug (the wire being routed wasn't
+excluded from its own splice's neighbour vote) on the first attempt.
 
-As `@openharness/io`'s the reference tool importer is built (Phase 1), add:
+Still not covered by any real export (spec §14, review R1): a diode, a splice
+with real wiring (the kitchen-sink document has no splice), a bundle with an
+authored length, and multi-configuration connector parts in practice. Adding
+these to the live `gpVj` kitchen-sink document and re-exporting is a five-
+minute follow-up whenever there's time for another browser pass.
 
-1. `.ohd` versions of both, produced by the importer.
-2. `expected/{bom.csv,nets.json,diagnostics.json}` for each, once
-   `@openharness/core`'s derive algorithms exist to produce them.
-3. The two topologies review R1 and R12 call out as still missing evidence:
-   a diode, a splice with two wires, a bundle with an authored length, and
-   the two-chained-unplaced-splices case for testing `layoutHost` (spec
-   §6.2, review R12).
-
-Round-trip (import → export → import) must be a fixed point for every fixture
-here — that's the CI-enforced part of spec §11.
+Round-trip (import → export → import) must be a fixed point for every
+fixture — that's the CI-enforced part of spec §11. Export (the second half of
+the round trip) doesn't exist yet, so this isn't tested yet either; it's the
+natural next slice once `.ohd` save exists.
