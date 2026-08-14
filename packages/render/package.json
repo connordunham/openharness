@@ -1,0 +1,19 @@
+{
+  "name": "@openharness/render",
+  "version": "0.0.1",
+  "description": "Pure SVG scene builders for the schematic and layout views. No DOM dependency (spec §5.1).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openharness/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

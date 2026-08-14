@@ -1,0 +1,19 @@
+{
+  "name": "@openharness/io",
+  "version": "0.0.1",
+  "description": "Load/save, migrations, PDF/XLSX/CSV/WireViz export, the reference tool and KiCad/CSV import (spec §5.1, §11).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openharness/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

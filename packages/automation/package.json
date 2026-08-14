@@ -1,0 +1,19 @@
+{
+  "name": "@openharness/automation",
+  "version": "0.0.1",
+  "description": "Automation plugin host: manifest loader, worker sandbox, scoped permissions, command/rule/panel registries (spec §8).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openharness/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
