@@ -31,5 +31,21 @@ export function computeDerivedModel(doc: HarnessDocument): DerivedModel {
   const bom = computeBom(doc, wireLengths);
   const diagnostics = runBuiltInRules({ doc, nets, conflicts, wireRoutes, bundleContents, bom });
 
+  // Array-valued outputs are sorted into a deterministic order before being
+  // returned. Internally they're built by walking `Object.entries(doc.*)`,
+  // whose order depends on incidental JS object key-insertion order — which
+  // itself depends on things like `.ohd` serialisation choosing to sort
+  // keys alphabetically (spec §10) for clean git diffs. Without this, the
+  // *same document* could produce a differently-ordered BOM/diagnostics list
+  // depending on how it was loaded, which would make golden-file tests
+  // (spec §13) and exported CSVs non-reproducible for no functional reason.
+  bom.sort((a, b) => (a.partId ?? `${a.partNumber}:${a.unit}`).localeCompare(b.partId ?? `${b.partNumber}:${b.unit}`));
+  diagnostics.sort((a, b) => {
+    const ka = `${a.ruleId}:${a.targets.map((t) => t.id).join(',')}`;
+    const kb = `${b.ruleId}:${b.targets.map((t) => t.id).join(',')}`;
+    return ka.localeCompare(kb);
+  });
+  nets.sort((a, b) => a.id.localeCompare(b.id));
+
   return { nets, wireRoutes, wireLengths, bundleContents, bundleDiameters, bom, diagnostics };
 }

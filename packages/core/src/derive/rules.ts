@@ -106,6 +106,23 @@ function emptyBundle({ doc, bundleContents }: RuleInputs): Diagnostic[] {
   return out;
 }
 
+/**
+ * REAL-DATA FINDING (from running this against `_reference_harness_export.json`
+ * via the CLI, not caught by any hand-built test): this rule fires on that
+ * real user document — connector "ZWfYpO" has two wires landing on each of
+ * its two cavities with no splice between them, which reads as the user
+ * using a 2-cavity connector as an in-line jumper/pass-through rather than a
+ * true termination. That might be a legitimate the reference tool pattern (some
+ * real-world builds do land two wires in one crimp) rather than an actual
+ * error, and there's no evidence either way — the review document (R2)
+ * already flagged that these DRC rules are "plausible engineering concerns,
+ * not matching the original's actual guardrails." Left as `error` rather
+ * than downgraded, since getting it wrong loud (a false-positive error you
+ * can see and dismiss) is safer than getting it wrong quiet (a real crimp
+ * problem silently passing as a warning) — but this is exactly the kind of
+ * thing worth checking against the live app's own validation UI next time
+ * it's open, rather than guessing further from here.
+ */
 function overfilledCavity({ doc }: RuleInputs): Diagnostic[] {
   const out: Diagnostic[] = [];
   const counts = new Map<string, number>();
