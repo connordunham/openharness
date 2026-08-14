@@ -2,16 +2,16 @@
   "name": "openharness",
   "private": true,
   "version": "0.0.1",
+  "type": "module",
   "description": "Local, automation-first wire harness CAD tool. See HARNESS-DESIGNER-SPEC.md.",
-  "packageManager": "pnpm@9.0.0",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "pnpm -r --filter=./packages/* run build",
+    "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint . --ext .ts,.tsx",
+    "lint": "eslint .",
     "typecheck": "tsc -b"
   },
   "devDependencies": {

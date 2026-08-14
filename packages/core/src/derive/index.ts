@@ -1,25 +1,35 @@
 /**
- * Derived model computation (spec §6). Deliberately split from store.ts so
- * each piece — net extraction (§6.1), routing (§6.2), length (§6.3), BOM
- * (§6.4), DRC (§6.5) — can be built, tested and golden-fixtured
- * independently, per the Phase 1 build plan (spec §12).
+ * Derived model computation (spec §6): net extraction → routing → length →
+ * bundle analysis → BOM → DRC, in that dependency order. Each stage is its
+ * own module so it can be tested and golden-fixtured independently (spec
+ * §12, §13).
  *
- * SCAFFOLDING NOTE: this currently returns a correctly-shaped but empty
- * DerivedModel. Implementing the real algorithms is the next slice of work,
- * not part of the initial scaffold — see fixtures/README.md for the golden
- * files this will be tested against.
+ * PERFORMANCE NOTE (review R9): this recomputes everything on every call,
+ * with no dependency tracking between a patch and the derived slices it can
+ * possibly affect. That's fine at pilot scale (the store already caches the
+ * result and only recomputes when the document actually changes — see
+ * `HarnessStore.derived`) but is exactly the thing flagged as needing a
+ * real invalidation contract before the document gets large. Left as-is
+ * deliberately rather than guessing at an invalidation scheme with no real
+ * usage data yet.
  */
 
 import type { HarnessDocument, DerivedModel } from '../types.js';
+import { extractNets } from './netExtraction.js';
+import { computeRoutes } from './routing.js';
+import { computeLengths } from './length.js';
+import { computeBundleContents, computeBundleDiameters } from './bundleAnalysis.js';
+import { computeBom } from './bom.js';
+import { runBuiltInRules } from './rules.js';
 
-export function computeDerivedModel(_doc: HarnessDocument): DerivedModel {
-  return {
-    nets: [],
-    wireRoutes: new Map(),
-    wireLengths: new Map(),
-    bundleContents: new Map(),
-    bundleDiameters: new Map(),
-    bom: [],
-    diagnostics: [],
-  };
+export function computeDerivedModel(doc: HarnessDocument): DerivedModel {
+  const { nets, conflicts } = extractNets(doc);
+  const wireRoutes = computeRoutes(doc);
+  const wireLengths = computeLengths(doc, wireRoutes);
+  const bundleContents = computeBundleContents(wireRoutes);
+  const bundleDiameters = computeBundleDiameters(doc, bundleContents);
+  const bom = computeBom(doc, wireLengths);
+  const diagnostics = runBuiltInRules({ doc, nets, conflicts, wireRoutes, bundleContents, bom });
+
+  return { nets, wireRoutes, wireLengths, bundleContents, bundleDiameters, bom, diagnostics };
 }

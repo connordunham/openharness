@@ -193,11 +193,21 @@ export interface WireEnd {
   crimpHeight?: number;
 }
 
+/**
+ * NOTE on naming: the source wire format uses the magic handle "Splice" for
+ * splices and "Left"/"Right" for two-terminal parts (resistor/diode) — only
+ * "Right" has been directly observed (spec §14). That is distinct from the
+ * `Terminal` *component type* (ferrule/ring/spade/...), which is a
+ * single-point connection like a splice but with exactly one wire, not
+ * n-ary. Kept as separate Endpoint kinds (`twoTerminalSide` vs
+ * `terminalPoint`) to avoid conflating the two "terminal" concepts.
+ */
 export type Endpoint =
   | { kind: 'cavity'; componentId: ComponentId; cavityId: CavityId }
   | { kind: 'cableCore'; componentId: ComponentId; coreId: CavityId }
   | { kind: 'splice'; componentId: ComponentId }
-  | { kind: 'terminal'; componentId: ComponentId; side: 'Left' | 'Right' }
+  | { kind: 'terminalPoint'; componentId: ComponentId }
+  | { kind: 'twoTerminalSide'; componentId: ComponentId; side: 'Left' | 'Right' }
   | { kind: 'free'; point: Point };
 
 export interface Wire {
@@ -365,7 +375,7 @@ export interface BomLine {
   manufacturer: string;
   description: string;
   quantity: number;
-  unit: 'ea' | 'mm' | 'm' | 'in' | 'ft';
+  unit: 'ea' | 'mm' | 'cm' | 'm' | 'in' | 'ft';
   unitPrice?: number;
   extendedPrice?: number;
   refdes: string[];
