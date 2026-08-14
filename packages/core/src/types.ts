@@ -169,6 +169,10 @@ export interface Cable extends ComponentBase {
   type: 'cable';
   cores: CableCore[];
   shield?: CableCore;
+  /** Which side wires exit — same affordance as Connector.flipped (spec §2.3's
+   * "chevrons on each side flip which way the wires exit" applies to any
+   * multi-row schematic node, not just connectors). [inferred] */
+  flipped?: boolean;
 }
 
 export interface GenericComponent extends ComponentBase {

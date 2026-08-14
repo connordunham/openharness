@@ -101,11 +101,13 @@ function buildNode(component: Component): SceneNode | null {
 
   switch (component.type) {
     case 'connector': {
+      const flipped = component.flipped === true;
+      const exitX = flipped ? pos.x : pos.x + BOX_WIDTH;
       const rows: SceneRow[] = component.cavities.map((cavity, i) => ({
         rowId: cavity.id,
         label: cavity.designation,
         signal: cavity.signal,
-        point: { x: pos.x + BOX_WIDTH, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
+        point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
       }));
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
@@ -114,12 +116,14 @@ function buildNode(component: Component): SceneNode | null {
       };
     }
     case 'cable': {
+      const flipped = component.flipped === true;
+      const exitX = flipped ? pos.x : pos.x + BOX_WIDTH;
       const all = [...component.cores, ...(component.shield ? [component.shield] : [])];
       const rows: SceneRow[] = all.map((core, i) => ({
         rowId: core.id,
         label: core.designation ?? String(i + 1),
         signal: core.signal,
-        point: { x: pos.x + BOX_WIDTH, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
+        point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
       }));
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
@@ -127,13 +131,32 @@ function buildNode(component: Component): SceneNode | null {
         rows,
       };
     }
-    case 'splice':
+    case 'splice': {
+      // Drawn with a port on each side, like a two-terminal part (Connor's
+      // request: "the splice should have two connections on either end like
+      // a resistor"). Structurally a splice stays an n-ary hyper-node — any
+      // number of wires can land on either port and they're all on the same
+      // net (spec §3.3/§6.1: "Splices have one handle for all wires"). Both
+      // rows resolve to the same underlying `{kind:'splice'}` endpoint; see
+      // resolvePoint() below, which picks whichever row is present rather
+      // than requiring an exact componentId-keyed row.
+      const height = HEADER_HEIGHT + ROW_HEIGHT;
+      const width = BOX_WIDTH * 0.7;
+      return {
+        componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
+        x: pos.x, y: pos.y, width, height,
+        rows: [
+          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 } },
+          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 } },
+        ],
+      };
+    }
     case 'terminal': {
       const height = HEADER_HEIGHT + ROW_HEIGHT;
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width: BOX_WIDTH * 0.6, height,
-        rows: [{ rowId: component.id, label: component.type === 'splice' ? 'splice' : component.terminalKind, point: { x: pos.x + BOX_WIDTH * 0.6, y: pos.y + height / 2 } }],
+        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: pos.x + BOX_WIDTH * 0.6, y: pos.y + height / 2 } }],
       };
     }
     case 'resistor':
@@ -181,8 +204,17 @@ function resolvePoint(endpoint: Endpoint, index: Map<string, Map<string, Point>>
     case 'cableCore':
       return index.get(endpoint.componentId)?.get(endpoint.coreId) ?? null;
     case 'splice':
-    case 'terminalPoint':
-      return index.get(endpoint.componentId)?.get(endpoint.componentId) ?? null;
+    case 'terminalPoint': {
+      // Splice rows are keyed `${id}:Left` / `${id}:Right` (two visual ports
+      // on one n-ary net endpoint, see buildNode above), and a terminal's
+      // single row is keyed by its own componentId — neither is guaranteed
+      // to equal `endpoint.componentId` exactly, so pick whichever row this
+      // component has rather than requiring an exact key match.
+      const rowMap = index.get(endpoint.componentId);
+      if (!rowMap) return null;
+      const first = rowMap.values().next();
+      return first.done ? null : first.value;
+    }
     case 'twoTerminalSide':
       return index.get(endpoint.componentId)?.get(`${endpoint.componentId}:${endpoint.side}`) ?? null;
     case 'free':

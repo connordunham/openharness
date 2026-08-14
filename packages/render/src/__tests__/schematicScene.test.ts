@@ -68,7 +68,7 @@ describe('computeSchematicScene', () => {
     expect(scene.wires[0]!.to).toEqual({ x: 300 + BOX_WIDTH, y: HEADER_HEIGHT + ROW_HEIGHT / 2 });
   });
 
-  it('resolves a wire to a splice as the splice box center (n-ary hyper-node, spec §6.1)', () => {
+  it('resolves a wire to a splice port — an n-ary hyper-node drawn with two visual ports (spec §3.3/§6.1, and Connor: "like a resistor")', () => {
     const d = doc();
     d.components['c1'] = {
       id: 'c1', type: 'connector', refdes: 'C1',
@@ -86,8 +86,12 @@ describe('computeSchematicScene', () => {
     } satisfies Wire;
 
     const scene = computeSchematicScene(d);
+    const spliceNode = computeSchematicScene(d).nodes.find((n) => n.componentId === 's1')!;
+    expect(spliceNode.rows).toHaveLength(2); // Left + Right port, both the same underlying {kind:'splice'} endpoint
     expect(scene.wires[0]!.degraded).toBe(false);
-    expect(scene.wires[0]!.to.x).toBeGreaterThan(200);
+    // Resolves to *a* port on the splice box, not necessarily a specific side.
+    expect(scene.wires[0]!.to.x).toBeGreaterThanOrEqual(200);
+    expect(scene.wires[0]!.to.x).toBeLessThanOrEqual(200 + spliceNode.width);
   });
 
   it('marks a wire degraded when an endpoint cannot be resolved (dangling reference)', () => {
