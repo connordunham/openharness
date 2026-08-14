@@ -2,15 +2,21 @@
   "name": "@openharness/app",
   "version": "0.0.1",
   "private": true,
-  "description": "The React editor: multi-pane workspace over Schematic / Layout / Parts / Connections / Diagnostics views (spec §7).",
+  "description": "The Electron desktop app: multi-pane workspace over Schematic / Layout / Parts / Connections / Diagnostics views (spec §7). GUI is mandatory per the reference app.",
   "type": "module",
+  "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "dev:renderer": "vite",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build": "npm run build:renderer && npm run build:electron",
+    "start": "npm run build && electron .",
+    "dev": "concurrently -k -n renderer,electron -c blue,green \"npm run dev:renderer\" \"npm run build:electron -- --watch --preserveWatchOutput\" ",
+    "electron:dev": "cross-env OPENHARNESS_DEV=1 electron dist-electron/main.js"
   },
   "dependencies": {
     "@openharness/core": "*",
+    "@openharness/io": "*",
     "@openharness/render": "*",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
@@ -22,6 +28,9 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "^5.5.0",
-    "vite": "^5.4.0"
+    "vite": "^5.4.0",
+    "electron": "^31.3.0",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3"
   }
 }

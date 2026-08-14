@@ -6,6 +6,7 @@
     { "path": "packages/io" },
     { "path": "packages/automation" },
     { "path": "packages/cli" },
-    { "path": "packages/mcp" }
+    { "path": "packages/mcp" },
+    { "path": "packages/app" }
   ]
 }

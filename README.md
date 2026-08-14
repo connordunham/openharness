@@ -7,8 +7,30 @@ one level up from this repo). Review notes and open decisions:
 
 ## Status
 
-**Phase 1 in progress.** `@openharness/core` now has a real, tested
-implementation of the whole derived model (spec §6):
+**There is now a real, running GUI.** `@openharness/app` is an Electron
+desktop app (decision: Electron over Tauri — same TypeScript/Node codebase
+as `@openharness/core`/`io`, no IPC boundary between the app and automation
+scripts that need `fs`/`child_process`). It's not the full Schematic/Layout
+editor yet — that's a much larger effort — but it's a genuinely working
+slice: pick a real the reference tool export or a `.ohd` file via a native file
+dialog, run it through the actual derive pipeline, and see real diagnostics
+and BOM output, or save/export from the same document. This corresponds to
+the Diagnostics + Parts views from spec §7.1/§7.5, pulled forward because
+they need zero canvas work to be useful.
+
+Verified by actually building and launching the app on Windows and driving
+it with real mouse input — not just typechecked. That process caught a real
+bug: the preload script (the bridge between the sandboxed renderer and the
+main process) was compiled as ESM, but Electron's sandboxed preload context
+doesn't reliably run ES modules, so the `contextBridge` call silently never
+executed and every button threw `Cannot read properties of undefined
+(reading 'pickFile')`. Fixed by forcing the preload script to compile as
+CommonJS via TypeScript's `.cts` source extension, independent of the
+package's `"type": "module"`. No unit or typecheck could have caught
+this — it only shows up when the built app is actually run.
+
+`@openharness/core` has a real, tested implementation of the whole derived
+model (spec §6):
 
 - **Net extraction** (`derive/netExtraction.ts`) — union-find over cavities,
   splices (n-ary hyper-nodes), two-terminal sides (resistor/diode — kept
@@ -71,9 +93,9 @@ and golden-file diffs non-reproducible for no functional reason —
 `computeDerivedModel` now sorts all three deterministically before
 returning, with a dedicated regression test.
 
-Still placeholder: rendering, PDF/XLSX/WireViz export, the automation host,
-the MCP server, and the CLI's `run`/`query`/`diff`/`doctor` commands. See
-`HARNESS-DESIGNER-SPEC.md` §12 for the phase plan.
+Still placeholder: the Schematic/Layout canvas, PDF/XLSX/WireViz export, the
+automation host, the MCP server, and the CLI's `run`/`query`/`diff`/`doctor`
+commands. See `HARNESS-DESIGNER-SPEC.md` §12 for the phase plan.
 
 ## Layout
 
@@ -82,25 +104,31 @@ packages/
   core/         @openharness/core        — document model, store, derive: IMPLEMENTED
   io/           @openharness/io          — the reference tool import, .ohd save/load, BOM CSV: IMPLEMENTED. PDF/XLSX/WireViz export, KiCad import: TODO (Phase 6)
   cli/          openharness              — import/validate/export --bom: IMPLEMENTED. run/query/diff/doctor: TODO (Phase 5+)
-  render/       @openharness/render      — SVG scene builders (TODO, Phase 2)
+  app/          @openharness/app         — Electron desktop app: window/dialogs/Diagnostics+Parts views IMPLEMENTED. Schematic/Layout canvas: TODO (Phase 2)
+  render/       @openharness/render      — SVG scene builders the Schematic/Layout canvas will use (TODO, Phase 2)
   automation/   @openharness/automation  — plugin host (TODO, Phase 5)
   mcp/          @openharness/mcp         — local MCP server (TODO, Phase 5)
-  app/          @openharness/app         — React editor (TODO, Phase 2)
 automations/    — your own automations live here (spec §8.2)
 fixtures/       — golden-file test documents (spec §13)
 ```
 
+Running the app: `cd packages/app && npm run build && npm run start` (or
+`npm run dev` for the renderer + watch-mode electron combo during
+development).
+
 ## Before you start Phase 1
 
-Per the review document's closing summary, six decisions are still open and
-should be made deliberately before real feature work starts:
+Decision made: **Electron**, not Tauri (see the app's package.json
+description and the Status section above for why — resolves review R15).
+Five more decisions are still open from the review document's closing
+summary and should be made deliberately before Phase 2 (the real Schematic
+canvas) goes deep:
 
-1. Tauri/Electron-primary vs. browser-primary (review R15)
-2. Variants/configurable harnesses — in or out of v1, as an explicit ADR (R3)
-3. Directory file format's atomic-write story (R11)
-4. Derived-model invalidation contract (R9)
-5. Rough NFR numbers — target doc size, startup budget (R25)
-6. PDF export spike, before Phase 2-3 UI assumes it works (R20)
+1. Variants/configurable harnesses — in or out of v1, as an explicit ADR (R3)
+2. Directory file format's atomic-write story (R11)
+3. Derived-model invalidation contract (R9)
+4. Rough NFR numbers — target doc size, startup budget (R25)
+5. PDF export spike, before Phase 2-3 UI assumes it works (R20)
 
 ## Getting started
 

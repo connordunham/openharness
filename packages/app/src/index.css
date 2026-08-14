@@ -1,0 +1,4 @@
+* { box-sizing: border-box; }
+body { margin: 0; }
+table th, table td { border-bottom: 1px solid #eee; padding: 4px 8px; text-align: left; }
+table th { color: #666; font-weight: 600; font-size: 12px; text-transform: uppercase; }
