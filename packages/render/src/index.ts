@@ -7,3 +7,4 @@
  * eventual PDF exporter (spec §9).
  */
 export * from './schematicScene.js';
+export * from './routing.js';

@@ -35,6 +35,7 @@ export function createEmptyDocument(name = 'Untitled Harness'): HarnessDocument 
     bundles: {},
     groups: {},
     notes: {},
+    wireGroups: {},
     parts: {},
   };
 }

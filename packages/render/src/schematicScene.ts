@@ -12,6 +12,7 @@
  */
 
 import type { HarnessDocument, Component, Endpoint, Point } from '@openharness/core';
+import { computeRoutedPath, pathMidpoint, type ExitDir } from './routing.js';
 
 export const ROW_HEIGHT = 22;
 export const HEADER_HEIGHT = 24;
@@ -23,6 +24,8 @@ export interface SceneRow {
   label: string;
   signal?: string;
   point: Point;
+  /** Which way this port's lead physically points — see routing.ts. */
+  dir: ExitDir;
 }
 
 export interface SceneNode {
@@ -46,6 +49,12 @@ export interface SceneWire {
   to: Point;
   /** True if either endpoint couldn't be resolved to a real point (dangling reference). */
   degraded: boolean;
+  /** Orthogonal, 45°-mitered route between `from` and `to` (routing.ts). */
+  routePoints: Point[];
+  /** Same route, pre-serialized as an SVG path `d` for direct rendering. */
+  path: string;
+  /** Midpoint along the route — anchors the wire-properties popup on its trace. */
+  midpoint: Point;
 }
 
 export interface SceneNote {
@@ -69,19 +78,31 @@ export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
   }
 
   const nodesById = new Map(nodes.map((n) => [n.componentId, n]));
-  const rowPointIndex = buildRowPointIndex(nodes);
+  const rowIndex = buildRowIndex(nodes);
 
   const wires: SceneWire[] = Object.values(doc.wires).map((wire) => {
-    const from = resolvePoint(wire.source, rowPointIndex);
-    const to = resolvePoint(wire.target, rowPointIndex);
+    const from = resolveAnchor(wire.source, rowIndex);
+    const to = resolveAnchor(wire.target, rowIndex);
+    const degraded = !from || !to;
+    const fromPoint = from?.point ?? { x: 0, y: 0 };
+    const toPoint = to?.point ?? { x: 0, y: 0 };
+    // A degraded (dangling) wire has nothing sensible to route between —
+    // draw it as a straight line so it's still visible as broken, rather
+    // than running the elbow router on a meaningless anchor.
+    const routed = degraded
+      ? { points: [fromPoint, toPoint], d: `M ${fromPoint.x} ${fromPoint.y} L ${toPoint.x} ${toPoint.y}` }
+      : computeRoutedPath(fromPoint, from!.dir, toPoint, to!.dir);
     return {
       wireId: wire.id,
       refdes: wire.refdes,
       color: wire.color,
       stripeColor: wire.stripeColor,
-      from: from ?? { x: 0, y: 0 },
-      to: to ?? { x: 0, y: 0 },
-      degraded: !from || !to,
+      from: fromPoint,
+      to: toPoint,
+      degraded,
+      routePoints: routed.points,
+      path: routed.d,
+      midpoint: pathMidpoint(routed.points),
     };
   });
 
@@ -102,12 +123,14 @@ function buildNode(component: Component): SceneNode | null {
   switch (component.type) {
     case 'connector': {
       const flipped = component.flipped === true;
+      const dir: ExitDir = flipped ? 'left' : 'right';
       const exitX = flipped ? pos.x : pos.x + BOX_WIDTH;
       const rows: SceneRow[] = component.cavities.map((cavity, i) => ({
         rowId: cavity.id,
         label: cavity.designation,
         signal: cavity.signal,
         point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
+        dir,
       }));
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
@@ -117,6 +140,7 @@ function buildNode(component: Component): SceneNode | null {
     }
     case 'cable': {
       const flipped = component.flipped === true;
+      const dir: ExitDir = flipped ? 'left' : 'right';
       const exitX = flipped ? pos.x : pos.x + BOX_WIDTH;
       const all = [...component.cores, ...(component.shield ? [component.shield] : [])];
       const rows: SceneRow[] = all.map((core, i) => ({
@@ -124,6 +148,7 @@ function buildNode(component: Component): SceneNode | null {
         label: core.designation ?? String(i + 1),
         signal: core.signal,
         point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
+        dir,
       }));
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
@@ -146,8 +171,8 @@ function buildNode(component: Component): SceneNode | null {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width, height,
         rows: [
-          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 } },
-          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 } },
+          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 }, dir: 'left' },
+          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 }, dir: 'right' },
         ],
       };
     }
@@ -156,7 +181,7 @@ function buildNode(component: Component): SceneNode | null {
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width: BOX_WIDTH * 0.6, height,
-        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: pos.x + BOX_WIDTH * 0.6, y: pos.y + height / 2 } }],
+        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: pos.x + BOX_WIDTH * 0.6, y: pos.y + height / 2 }, dir: 'right' }],
       };
     }
     case 'resistor':
@@ -167,8 +192,8 @@ function buildNode(component: Component): SceneNode | null {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width, height,
         rows: [
-          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 } },
-          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 } },
+          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 }, dir: 'left' },
+          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 }, dir: 'right' },
         ],
       };
     }
@@ -186,18 +211,24 @@ function buildNode(component: Component): SceneNode | null {
   }
 }
 
-/** rowId -> point, per component, so wire endpoints can be resolved without re-walking every node. */
-function buildRowPointIndex(nodes: SceneNode[]): Map<string, Map<string, Point>> {
-  const index = new Map<string, Map<string, Point>>();
+export interface Anchor {
+  point: Point;
+  dir: ExitDir;
+}
+
+/** rowId -> {point,dir}, per component, so wire endpoints can be resolved
+ * without re-walking every node. */
+function buildRowIndex(nodes: SceneNode[]): Map<string, Map<string, Anchor>> {
+  const index = new Map<string, Map<string, Anchor>>();
   for (const node of nodes) {
-    const rowMap = new Map<string, Point>();
-    for (const row of node.rows) rowMap.set(row.rowId, row.point);
+    const rowMap = new Map<string, Anchor>();
+    for (const row of node.rows) rowMap.set(row.rowId, { point: row.point, dir: row.dir });
     index.set(node.componentId, rowMap);
   }
   return index;
 }
 
-function resolvePoint(endpoint: Endpoint, index: Map<string, Map<string, Point>>): Point | null {
+function resolveAnchor(endpoint: Endpoint, index: Map<string, Map<string, Anchor>>): Anchor | null {
   switch (endpoint.kind) {
     case 'cavity':
       return index.get(endpoint.componentId)?.get(endpoint.cavityId) ?? null;
@@ -218,6 +249,6 @@ function resolvePoint(endpoint: Endpoint, index: Map<string, Map<string, Point>>
     case 'twoTerminalSide':
       return index.get(endpoint.componentId)?.get(`${endpoint.componentId}:${endpoint.side}`) ?? null;
     case 'free':
-      return endpoint.point;
+      return { point: endpoint.point, dir: 'right' };
   }
 }

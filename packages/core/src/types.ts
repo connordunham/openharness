@@ -18,6 +18,10 @@ import type {
   ComponentId, WireId, BundleId, GroupId, NoteId, PartId, CavityId, TwistGroupId,
 } from './ids.js';
 
+/** A WireGroup shares the twist-group id space (spec's `twistedWires[].id`,
+ * §3.3) — the same id a `Wire.twistGroupId` points at. */
+export type WireGroupId = TwistGroupId;
+
 // ---------------------------------------------------------------------------
 // Top level (spec §4.1)
 // ---------------------------------------------------------------------------
@@ -32,6 +36,12 @@ export interface HarnessDocument {
   bundles: Record<BundleId, Bundle>;
   groups: Record<GroupId, Group>;
   notes: Record<NoteId, Note>;
+  /** Wire groupings authored in this app (spec revision, Connor's wiring-core
+   * request): a WireGroup is how a "cable" now comes into being — select two
+   * or more wires (or already-grouped wires) and group them, optionally
+   * attaching a cable part. See WireGroup below for why this replaces
+   * placing a `Cable` *component* as the primary authoring path. */
+  wireGroups: Record<WireGroupId, WireGroup>;
 
   parts: Record<PartId, Part>;
 }
@@ -228,6 +238,9 @@ export interface Wire {
 
   ident?: string;
   group?: string;
+  /** Which WireGroup (twist or cable) this wire belongs to, if any — see
+   * WireGroup below. Shares the id space with the legacy `twistedWires[].id`
+   * from imports (spec §3.3). */
   twistGroupId?: TwistGroupId;
 
   /** Explicit frozen route through the layout graph. If absent, derived (spec §6.2). */
@@ -238,6 +251,36 @@ export interface Wire {
 
   ends?: { source: WireEnd; target: WireEnd };
 
+  custom: Record<string, unknown>;
+}
+
+/**
+ * A grouping of wires (and/or other WireGroups, so a jacketed cable can
+ * bundle several already-twisted pairs plus loose wires — Connor's "allow
+ * grouping through twisting but also allow grouping of single wires or
+ * multiple pairs").
+ *
+ * `kind: 'twist'` is a physical/visual grouping only — no part, no BOM
+ * line, just wires drawn and (eventually) routed together.
+ * `kind: 'cable'` is the same grouping mechanism with a part reference
+ * attached, so it rolls up to a real BOM line — this is deliberately how a
+ * "cable" comes into being now, instead of placing a `Cable` *component*
+ * with pre-declared cores and wiring each one individually. The legacy
+ * `Cable` component type (spec §3.3, real the reference tool exports use it)
+ * is kept for import fidelity only — see schematicScene.ts.
+ */
+export interface WireGroup {
+  id: WireGroupId;
+  kind: 'twist' | 'cable';
+  refdes?: string;
+  memberWireIds: WireId[];
+  /** Nested groups — e.g. two twisted pairs bundled into one jacketed cable. */
+  memberGroupIds: WireGroupId[];
+  /** Only meaningful for `kind: 'cable'` — references a CablePart. */
+  partId?: PartId;
+  /** Jacket color, `kind: 'cable'` only. [inferred] */
+  color?: string;
+  schematicPosition?: Point;
   custom: Record<string, unknown>;
 }
 
