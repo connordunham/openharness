@@ -49,7 +49,7 @@ export interface SceneWire {
   to: Point;
   /** True if either endpoint couldn't be resolved to a real point (dangling reference). */
   degraded: boolean;
-  /** Orthogonal, 45°-mitered route between `from` and `to` (routing.ts). */
+  /** Route between `from` and `to` with 45°-diagonal lane offsets (routing.ts). */
   routePoints: Point[];
   /** Same route, pre-serialized as an SVG path `d` for direct rendering. */
   path: string;
