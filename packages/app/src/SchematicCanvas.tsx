@@ -52,6 +52,11 @@ import { ComponentIcon } from './icons.js';
 
 interface Props {
   store: HarnessStore;
+  /** Cross-pane hover highlighting (Layout/BOM/Schematic all share one id
+   * via App.tsx) — see the file header note in LayoutCanvas.tsx. Both
+   * optional so this component still works standalone (e.g. in tests). */
+  hoveredComponentId?: string | null;
+  onHoverComponent?: (id: string | null) => void;
 }
 
 interface PendingWire {
@@ -190,7 +195,7 @@ function ensureWirePart(draft: HarnessDocument, wireId: string): WirePart {
   return draft.parts[w.partId] as WirePart;
 }
 
-export function SchematicCanvas({ store }: Props) {
+export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }: Props) {
   const [selected, setSelected] = useState<Selection>(null);
   const [multiSelect, setMultiSelect] = useState<Set<string>>(new Set());
   const [pendingWire, setPendingWire] = useState<PendingWire | null>(null);
@@ -719,8 +724,20 @@ export function SchematicCanvas({ store }: Props) {
 
             {scene.nodes.map((node) => {
               const isSelected = selected?.kind === 'component' && selected.id === node.componentId;
+              const isHovered = hoveredComponentId === node.componentId;
               return (
-                <g key={node.componentId}>
+                <g
+                  key={node.componentId}
+                  onMouseEnter={() => onHoverComponent?.(node.componentId)}
+                  onMouseLeave={() => onHoverComponent?.(null)}
+                >
+                  {isHovered && !isSelected && (
+                    <rect
+                      x={node.x - 4} y={node.y - 4} width={node.width + 8} height={node.height + 8} rx={theme.radius.node + 3}
+                      fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
                   <rect
                     x={node.x} y={node.y} width={node.width} height={node.height} rx={theme.radius.node}
                     fill={theme.color.nodeFill}

@@ -12,9 +12,11 @@ import { createEmptyDocument, computeDerivedModel, type HarnessDocument, type Di
 import { importVendorJson, serializeDocument, parseDocument, bomToCsv, type RawHarnessDocument } from '@openharness/io';
 import { useHarnessStore } from './useHarnessStore.js';
 import { SchematicCanvas } from './SchematicCanvas.js';
+import { BomPane } from './BomPane.js';
+import { LayoutCanvas } from './LayoutCanvas.js';
 import { theme } from './theme.js';
 
-type Tab = 'schematic' | 'overview';
+type Tab = 'schematic' | 'layout' | 'bom' | 'overview';
 
 const SEVERITY_COLOR: Record<DiagnosticSeverity, string> = {
   error: theme.color.danger,
@@ -35,6 +37,12 @@ export function App() {
   const [tab, setTab] = useState<Tab>('schematic');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Cross-pane hover highlighting (spec follow-up: "when users hover over a
+  // part, highlight part across all 3 panes"). Lifted here since Schematic,
+  // Layout, and BOM are siblings — a component id hovered in any one of them
+  // lights it up in the others too, even on tabs that aren't visible right
+  // now (harmless: each pane just checks the id against its own content).
+  const [hoveredComponentId, setHoveredComponentId] = useState<string | null>(null);
 
   const newDocument = useCallback(() => {
     setError(null);
@@ -147,6 +155,15 @@ export function App() {
             <button style={styles.tabButton(tab === 'schematic')} onClick={() => setTab('schematic')}>
               Schematic
             </button>
+            <button style={styles.tabButton(tab === 'layout')} onClick={() => setTab('layout')}>
+              Layout
+            </button>
+            <button style={styles.tabButton(tab === 'bom')} onClick={() => setTab('bom')}>
+              BOM
+              {store && Object.keys(store.doc.parts).length > 0 && (
+                <span style={styles.tabBadge(false)}>{Object.keys(store.doc.parts).length}</span>
+              )}
+            </button>
             <button style={styles.tabButton(tab === 'overview')} onClick={() => setTab('overview')}>
               Overview
               {derived && derived.diagnostics.length > 0 && (
@@ -182,8 +199,12 @@ export function App() {
         </div>
       ) : tab === 'schematic' ? (
         <div style={{ flex: 1, minHeight: 0 }}>
-          <SchematicCanvas store={store} />
+          <SchematicCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />
         </div>
+      ) : tab === 'layout' ? (
+        <LayoutCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />
+      ) : tab === 'bom' ? (
+        <BomPane store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />
       ) : (
         <div style={styles.content}>
           <section style={styles.panel}>
@@ -229,25 +250,11 @@ export function App() {
           </section>
 
           <section style={styles.panel}>
-            <h3 style={styles.panelTitle}>BOM ({derived!.bom.length} lines)</h3>
-            {derived!.bom.length === 0 ? (
-              <p style={styles.mutedNote}>No BOM lines yet.</p>
-            ) : (
-              <table style={styles.table}>
-                <thead><tr><th style={styles.th}>Part Number</th><th style={styles.th}>Manufacturer</th><th style={styles.th}>Qty</th><th style={styles.th}>Unit</th><th style={styles.th}>Refdes</th></tr></thead>
-                <tbody>
-                  {derived!.bom.map((line, i) => (
-                    <tr key={i}>
-                      <td style={styles.td}>{line.partNumber}</td>
-                      <td style={styles.td}>{line.manufacturer}</td>
-                      <td style={styles.td}>{line.quantity}</td>
-                      <td style={styles.td}>{line.unit}</td>
-                      <td style={{ ...styles.td, color: theme.color.textFaint }}>{line.refdes.join(', ')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <h3 style={styles.panelTitle}>BOM</h3>
+            <p style={styles.mutedNote}>
+              {derived!.bom.length} rolled-up {derived!.bom.length === 1 ? 'line' : 'lines'} from {Object.keys(store.doc.parts).length} parts.
+              Open the <strong>BOM</strong> tab to assign parts, browse the parts library, or export.
+            </p>
           </section>
         </div>
       )}
