@@ -5,6 +5,24 @@
  * useHarnessStore.ts and SchematicCanvas.tsx for why that split matters:
  * every edit anywhere in this app takes the same `store.transact(...)` path
  * an automation would (spec §8.3).
+ *
+ * Split-pane layout (Connor: "I want to be able to split up the window and
+ * customize how the different panes appear (split in half or into
+ * quarters), adaptable depending on user preference"): `splitLayout`
+ * chooses a CSS-grid arrangement (single / two panes side by side / two
+ * panes stacked / four panes) and `paneViews` tracks which of the four
+ * views (Schematic/Layout/BOM/Overview) each grid cell shows, independent
+ * of the others. In `single` mode this collapses back to exactly the old
+ * one-tab-bar-at-a-time behavior — `paneViews[0]` just *is* what used to be
+ * the `tab` state, so nothing about the single-pane experience changed.
+ * Both are persisted to localStorage the same way dark mode already is, so
+ * the chosen layout survives a restart. Every pane shares the same
+ * `hoveredComponentId`/`onHoverComponent` pair already threaded through
+ * Schematic/Layout/BOM (spec follow-up: cross-pane hover highlighting) —
+ * with two or four panes visible at once that's no longer a "highlights on
+ * a tab you can't currently see" curiosity, it's the actual point: hover a
+ * wire in Schematic while Layout is visible in the next pane over and the
+ * matching component lights up right there.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -16,7 +34,11 @@ import { BomPane } from './BomPane.js';
 import { LayoutCanvas } from './LayoutCanvas.js';
 import { theme } from './theme.js';
 
-type Tab = 'schematic' | 'layout' | 'bom' | 'overview';
+type PaneView = 'schematic' | 'layout' | 'bom' | 'overview';
+type SplitLayout = 'single' | 'split-h' | 'split-v' | 'quad';
+
+const PANE_COUNT: Record<SplitLayout, number> = { single: 1, 'split-h': 2, 'split-v': 2, quad: 4 };
+const DEFAULT_PANE_VIEWS: PaneView[] = ['schematic', 'layout', 'bom', 'overview'];
 
 const SEVERITY_COLOR: Record<DiagnosticSeverity, string> = {
   error: theme.color.danger,
@@ -34,7 +56,32 @@ export function App() {
   const { store, replaceDocument } = useHarnessStore(null);
   const [sourcePath, setSourcePath] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
-  const [tab, setTab] = useState<Tab>('schematic');
+  const [splitLayout, setSplitLayout] = useState<SplitLayout>(() => {
+    try {
+      const saved = window.localStorage.getItem('openharness.splitLayout');
+      if (saved === 'single' || saved === 'split-h' || saved === 'split-v' || saved === 'quad') return saved;
+    } catch { /* ignore */ }
+    return 'single';
+  });
+  const [paneViews, setPaneViews] = useState<PaneView[]>(() => {
+    try {
+      const saved = window.localStorage.getItem('openharness.paneViews');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length === 4) return parsed as PaneView[];
+      }
+    } catch { /* ignore */ }
+    return DEFAULT_PANE_VIEWS;
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('openharness.splitLayout', splitLayout); } catch { /* ignore */ }
+  }, [splitLayout]);
+  useEffect(() => {
+    try { window.localStorage.setItem('openharness.paneViews', JSON.stringify(paneViews)); } catch { /* ignore */ }
+  }, [paneViews]);
+  const setPaneView = useCallback((index: number, view: PaneView) => {
+    setPaneViews((prev) => { const next = [...prev]; next[index] = view; return next; });
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Cross-pane hover highlighting (spec follow-up: "when users hover over a
@@ -152,6 +199,78 @@ export function App() {
   const derived = store ? computeDerivedModel(store.doc) : null;
   const errorCount = derived?.diagnostics.filter((d) => d.severity === 'error').length ?? 0;
 
+  // One switch statement backs every pane, single or split — this is the
+  // whole reason splitting the window was safe to add without touching
+  // Schematic/Layout/BOM/Overview at all: each pane is just this function
+  // called with a different `view`, sharing the one `hoveredComponentId`
+  // pair so cross-pane highlighting works regardless of which views happen
+  // to be on screen together.
+  const renderPaneView = (view: PaneView) => {
+    if (!store || !derived) return null;
+    switch (view) {
+      case 'schematic':
+        return <SchematicCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
+      case 'layout':
+        return <LayoutCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
+      case 'bom':
+        return <BomPane store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
+      case 'overview':
+        return (
+          <div style={styles.content}>
+            <section style={styles.panel}>
+              <h3 style={styles.panelTitle}>Document</h3>
+              <table style={styles.kvTable}>
+                <tbody>
+                  <tr><td style={styles.kvKey}>Name</td><td style={styles.kvVal}>{store.doc.meta.name}</td></tr>
+                  <tr><td style={styles.kvKey}>Components</td><td style={styles.kvVal}>{Object.keys(store.doc.components).length}</td></tr>
+                  <tr><td style={styles.kvKey}>Wires</td><td style={styles.kvVal}>{Object.keys(store.doc.wires).length}</td></tr>
+                  <tr><td style={styles.kvKey}>Bundles</td><td style={styles.kvVal}>{Object.keys(store.doc.bundles).length}</td></tr>
+                  <tr><td style={styles.kvKey}>Nets</td><td style={styles.kvVal}>{derived.nets.length}</td></tr>
+                  <tr><td style={styles.kvKey}>Parts</td><td style={styles.kvVal}>{Object.keys(store.doc.parts).length}</td></tr>
+                </tbody>
+              </table>
+              {importWarnings.length > 0 && (
+                <>
+                  <h4 style={styles.panelSubtitle}>Import warnings</h4>
+                  <ul style={styles.list}>{importWarnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+                </>
+              )}
+            </section>
+
+            <section style={styles.panel}>
+              <h3 style={styles.panelTitle}>Diagnostics ({derived.diagnostics.length})</h3>
+              {derived.diagnostics.length === 0 ? (
+                <p style={styles.mutedNote}>No diagnostics — this document is clean.</p>
+              ) : (
+                <table style={styles.table}>
+                  <thead><tr><th style={styles.th}>Severity</th><th style={styles.th}>Rule</th><th style={styles.th}>Message</th></tr></thead>
+                  <tbody>
+                    {derived.diagnostics.map((d, i) => (
+                      <tr key={i}>
+                        <td style={styles.td}>
+                          <span style={styles.severityChip(d.severity)}>{d.severity}</span>
+                        </td>
+                        <td style={{ ...styles.td, color: theme.color.textFaint, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{d.ruleId}</td>
+                        <td style={styles.td}>{d.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+
+            <section style={styles.panel}>
+              <h3 style={styles.panelTitle}>BOM</h3>
+              <p style={styles.mutedNote}>
+                {derived.bom.length} rolled-up {derived.bom.length === 1 ? 'line' : 'lines'} from {Object.keys(store.doc.parts).length} parts.
+                Open the <strong>BOM</strong> pane to assign parts, browse the parts library, or export.
+              </p>
+            </section>
+          </div>
+        );
+    }
+  };
+
   return (
     <div style={styles.shell}>
       <header style={styles.toolbar}>
@@ -168,26 +287,35 @@ export function App() {
           <button style={styles.button} disabled={!store} onClick={() => void exportBom()}>Export BOM CSV…</button>
         </div>
 
-        {store && (
+        {store && splitLayout === 'single' && (
           <div style={styles.tabGroup}>
-            <button style={styles.tabButton(tab === 'schematic')} onClick={() => setTab('schematic')}>
+            <button style={styles.tabButton(paneViews[0] === 'schematic')} onClick={() => setPaneView(0, 'schematic')}>
               Schematic
             </button>
-            <button style={styles.tabButton(tab === 'layout')} onClick={() => setTab('layout')}>
+            <button style={styles.tabButton(paneViews[0] === 'layout')} onClick={() => setPaneView(0, 'layout')}>
               Layout
             </button>
-            <button style={styles.tabButton(tab === 'bom')} onClick={() => setTab('bom')}>
+            <button style={styles.tabButton(paneViews[0] === 'bom')} onClick={() => setPaneView(0, 'bom')}>
               BOM
               {store && Object.keys(store.doc.parts).length > 0 && (
                 <span style={styles.tabBadge(false)}>{Object.keys(store.doc.parts).length}</span>
               )}
             </button>
-            <button style={styles.tabButton(tab === 'overview')} onClick={() => setTab('overview')}>
+            <button style={styles.tabButton(paneViews[0] === 'overview')} onClick={() => setPaneView(0, 'overview')}>
               Overview
               {derived && derived.diagnostics.length > 0 && (
                 <span style={styles.tabBadge(errorCount > 0)}>{derived.diagnostics.length}</span>
               )}
             </button>
+          </div>
+        )}
+
+        {store && (
+          <div style={styles.splitGroup} title="Split the window into multiple panes">
+            <SplitButton active={splitLayout === 'single'} onClick={() => setSplitLayout('single')} label="Single pane" kind="single" />
+            <SplitButton active={splitLayout === 'split-h'} onClick={() => setSplitLayout('split-h')} label="Split side by side" kind="split-h" />
+            <SplitButton active={splitLayout === 'split-v'} onClick={() => setSplitLayout('split-v')} label="Split top and bottom" kind="split-v" />
+            <SplitButton active={splitLayout === 'quad'} onClick={() => setSplitLayout('quad')} label="Split into quarters" kind="quad" />
           </div>
         )}
 
@@ -222,68 +350,61 @@ export function App() {
             <button style={styles.button} onClick={() => void load('vendor-json')}>Import the reference tool…</button>
           </div>
         </div>
-      ) : tab === 'schematic' ? (
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <SchematicCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />
+      ) : splitLayout === 'single' ? (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          {renderPaneView(paneViews[0] ?? 'schematic')}
         </div>
-      ) : tab === 'layout' ? (
-        <LayoutCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />
-      ) : tab === 'bom' ? (
-        <BomPane store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />
       ) : (
-        <div style={styles.content}>
-          <section style={styles.panel}>
-            <h3 style={styles.panelTitle}>Document</h3>
-            <table style={styles.kvTable}>
-              <tbody>
-                <tr><td style={styles.kvKey}>Name</td><td style={styles.kvVal}>{store.doc.meta.name}</td></tr>
-                <tr><td style={styles.kvKey}>Components</td><td style={styles.kvVal}>{Object.keys(store.doc.components).length}</td></tr>
-                <tr><td style={styles.kvKey}>Wires</td><td style={styles.kvVal}>{Object.keys(store.doc.wires).length}</td></tr>
-                <tr><td style={styles.kvKey}>Bundles</td><td style={styles.kvVal}>{Object.keys(store.doc.bundles).length}</td></tr>
-                <tr><td style={styles.kvKey}>Nets</td><td style={styles.kvVal}>{derived!.nets.length}</td></tr>
-                <tr><td style={styles.kvKey}>Parts</td><td style={styles.kvVal}>{Object.keys(store.doc.parts).length}</td></tr>
-              </tbody>
-            </table>
-            {importWarnings.length > 0 && (
-              <>
-                <h4 style={styles.panelSubtitle}>Import warnings</h4>
-                <ul style={styles.list}>{importWarnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
-              </>
-            )}
-          </section>
-
-          <section style={styles.panel}>
-            <h3 style={styles.panelTitle}>Diagnostics ({derived!.diagnostics.length})</h3>
-            {derived!.diagnostics.length === 0 ? (
-              <p style={styles.mutedNote}>No diagnostics — this document is clean.</p>
-            ) : (
-              <table style={styles.table}>
-                <thead><tr><th style={styles.th}>Severity</th><th style={styles.th}>Rule</th><th style={styles.th}>Message</th></tr></thead>
-                <tbody>
-                  {derived!.diagnostics.map((d, i) => (
-                    <tr key={i}>
-                      <td style={styles.td}>
-                        <span style={styles.severityChip(d.severity)}>{d.severity}</span>
-                      </td>
-                      <td style={{ ...styles.td, color: theme.color.textFaint, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{d.ruleId}</td>
-                      <td style={styles.td}>{d.message}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
-
-          <section style={styles.panel}>
-            <h3 style={styles.panelTitle}>BOM</h3>
-            <p style={styles.mutedNote}>
-              {derived!.bom.length} rolled-up {derived!.bom.length === 1 ? 'line' : 'lines'} from {Object.keys(store.doc.parts).length} parts.
-              Open the <strong>BOM</strong> tab to assign parts, browse the parts library, or export.
-            </p>
-          </section>
+        <div style={styles.paneGrid(splitLayout)}>
+          {Array.from({ length: PANE_COUNT[splitLayout] }, (_, i) => {
+            const view = paneViews[i] ?? DEFAULT_PANE_VIEWS[i] ?? 'schematic';
+            return (
+              <div key={i} style={styles.paneCell}>
+                <div style={styles.paneHeader}>
+                  <select
+                    style={styles.paneSelect}
+                    value={view}
+                    onChange={(e) => setPaneView(i, e.target.value as PaneView)}
+                  >
+                    <option value="schematic">Schematic</option>
+                    <option value="layout">Layout</option>
+                    <option value="bom">BOM{store && Object.keys(store.doc.parts).length > 0 ? ` (${Object.keys(store.doc.parts).length})` : ''}</option>
+                    <option value="overview">Overview{derived && derived.diagnostics.length > 0 ? ` (${derived.diagnostics.length})` : ''}</option>
+                  </select>
+                </div>
+                <div style={styles.paneBody}>
+                  {renderPaneView(view)}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
+  );
+}
+
+/** One button in the split-layout picker — four tiny geometric glyphs
+ * (a single square, two side by side, two stacked, four quarters) so the
+ * current arrangement reads at a glance without a text label taking up
+ * toolbar space. */
+function SplitButton({
+  active, onClick, label, kind,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  kind: SplitLayout;
+}) {
+  return (
+    <button style={styles.splitBtn(active)} onClick={onClick} title={label}>
+      <svg width={14} height={14} viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.4}>
+        <rect x={1} y={1} width={12} height={12} rx={1.5} />
+        {kind === 'split-h' && <line x1={7} y1={1} x2={7} y2={13} />}
+        {kind === 'split-v' && <line x1={1} y1={7} x2={13} y2={7} />}
+        {kind === 'quad' && <><line x1={7} y1={1} x2={7} y2={13} /><line x1={1} y1={7} x2={13} y2={7} /></>}
+      </svg>
+    </button>
   );
 }
 
@@ -326,6 +447,32 @@ const styles = {
     boxShadow: active ? theme.shadow.panel : 'none',
     display: 'inline-flex', alignItems: 'center', gap: 6,
   }),
+  splitGroup: {
+    display: 'flex', alignItems: 'center', gap: 2, background: theme.color.canvasBg, padding: 3,
+    borderRadius: 8, border: `1px solid ${theme.color.border}`,
+  },
+  splitBtn: (active: boolean) => ({
+    display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 24,
+    border: 'none', borderRadius: 5, cursor: 'pointer',
+    background: active ? theme.color.surface : 'transparent',
+    color: active ? theme.color.accent : theme.color.textMuted,
+    boxShadow: active ? theme.shadow.panel : 'none',
+  }),
+  paneGrid: (layout: SplitLayout) => ({
+    flex: 1, minHeight: 0, display: 'grid', gap: 1, background: theme.color.border,
+    gridTemplateColumns: layout === 'split-h' || layout === 'quad' ? '1fr 1fr' : '1fr',
+    gridTemplateRows: layout === 'split-v' || layout === 'quad' ? '1fr 1fr' : '1fr',
+  }),
+  paneCell: { display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, background: theme.color.canvasBg },
+  paneHeader: {
+    display: 'flex', alignItems: 'center', padding: '4px 6px', background: theme.color.surface,
+    borderBottom: `1px solid ${theme.color.border}`, flexShrink: 0,
+  },
+  paneSelect: {
+    border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: '3px 6px',
+    fontSize: 11.5, fontWeight: 600, background: theme.color.canvasBg, color: theme.color.textStrong,
+  },
+  paneBody: { flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: 'hidden' },
   tabBadge: (danger: boolean) => ({
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 16, height: 16,
     padding: '0 4px', borderRadius: 8, fontSize: 10.5, fontWeight: 700,
