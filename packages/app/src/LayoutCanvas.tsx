@@ -413,6 +413,69 @@ function wireTooltip(wireIds: string[], doc: HarnessStore['doc']): string {
   return `Wires through this node (${names.length}): ${names.join(', ')}`;
 }
 
+/** The signal name carried by one end of a wire, if that end lands on a
+ * cavity or cable core with one set — the only two Endpoint kinds that
+ * actually have a `.signal` field (see Endpoint/Cavity/CableCore in
+ * core/types.ts). Everything else (splice/terminal/twoTerminalSide/free)
+ * has no signal concept of its own. */
+function endpointSignal(ep: Endpoint, doc: HarnessStore['doc']): string | undefined {
+  if (ep.kind === 'cavity') {
+    const c = doc.components[ep.componentId];
+    return c?.type === 'connector' ? c.cavities.find((cv) => cv.id === ep.cavityId)?.signal : undefined;
+  }
+  if (ep.kind === 'cableCore') {
+    const c = doc.components[ep.componentId];
+    return c?.type === 'cable' ? c.cores.find((cr) => cr.id === ep.coreId)?.signal : undefined;
+  }
+  return undefined;
+}
+
+/** Connor: "when I hover over wires in the layout, have it list out all the
+ * signal names in that bundle" — same shape as wireTooltip above, but
+ * resolving each wire to the signal name at whichever end has one (source
+ * checked first, falling back to target) instead of just the wire's own
+ * refdes. A wire with no signal on either end still shows up, tagged
+ * "(unnamed)", so the count in the bundle stays accurate even before every
+ * cavity has been named. */
+function bundleSignalTooltip(wireIds: string[], doc: HarnessStore['doc']): string {
+  if (wireIds.length === 0) return 'No wires route through this bundle yet.';
+  const names = [...new Set(wireIds)]
+    .map((id) => {
+      const w = doc.wires[id];
+      if (!w) return id;
+      const signal = endpointSignal(w.source, doc) ?? endpointSignal(w.target, doc);
+      return signal ?? `${w.refdes} (unnamed)`;
+    })
+    .sort();
+  return `Signals (${names.length}): ${names.join(', ')}`;
+}
+
+/** Smooth cable-like path through every point (Connor: "make the layout
+ * routing more flowy") — a Catmull-Rom spline converted to cubic Bezier
+ * segments (the standard, well-known conversion; tension = 0, factor 1/6),
+ * so the curve passes through every waypoint exactly rather than just
+ * approaching it, unlike a cheaper "quadratic-through-midpoints" smoothing
+ * would. Draggable routing-node handles still sit at the true waypoint
+ * positions and the curve now actually threads through them. Falls back to
+ * a plain straight segment for 2 points (nothing to smooth). */
+function smoothBundlePath(points: Point[]): string {
+  if (points.length < 2) return '';
+  if (points.length === 2) return `M ${points[0]!.x} ${points[0]!.y} L ${points[1]!.x} ${points[1]!.y}`;
+  let d = `M ${points[0]!.x} ${points[0]!.y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]!;
+    const p1 = points[i]!;
+    const p2 = points[i + 1]!;
+    const p3 = points[i + 2] ?? p2;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
 interface Props {
   store: HarnessStore;
   hoveredComponentId?: string | null;
@@ -742,9 +805,12 @@ export function LayoutCanvas({
                 const from = a.type === 'branchPoint' ? branchOutlinePoint(pa, aAimAt) : (nodeGlyphs.get(a.id)?.stubEnd ?? pa);
                 const to = t.type === 'branchPoint' ? branchOutlinePoint(pt, tAimAt) : (nodeGlyphs.get(t.id)?.stubEnd ?? pt);
                 const polyPoints = [from, ...waypointsPx, to];
-                const polyStr = polyPoints.map((p) => `${p.x},${p.y}`).join(' ');
+                // Smooth spline instead of a sharp-angled polyline (Connor:
+                // "make the layout routing more flowy") — see
+                // smoothBundlePath's doc comment.
+                const pathD = smoothBundlePath(polyPoints);
                 const isSelected = selected?.kind === 'bundle' && selected.id === b.id;
-                const wireNames = wireTooltip(derived.bundleContents.get(b.id) ?? [], doc);
+                const signalNames = bundleSignalTooltip(derived.bundleContents.get(b.id) ?? [], doc);
                 // Cross-pane highlight: this bundle is directly hovered, or
                 // it's on the route of a wire hovered over in Schematic
                 // (Connor: "highlight all wires that route through that
@@ -755,21 +821,22 @@ export function LayoutCanvas({
                     {/* Fat invisible hit-target; grabbing anywhere on it (off
                        an existing routing-node handle) inserts a new bend.
                        Also the source of cross-pane bundle hover. */}
-                    <polyline points={polyStr} fill="none" stroke="transparent" strokeWidth={14}
+                    <path d={pathD} fill="none" stroke="transparent" strokeWidth={14}
                       style={{ cursor: 'crosshair' }}
                       onMouseDown={(e) => onBundleMouseDown(b.id, e)}
                       onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'bundle', id: b.id }); }}
                       onMouseEnter={() => onHoverBundle?.(b.id)} onMouseLeave={() => onHoverBundle?.(null)}>
-                      <title>{`${b.refdes} — ${wireNames}`}</title>
-                    </polyline>
+                      <title>{`${b.refdes} — ${signalNames}`}</title>
+                    </path>
                     {isHighlighted && (
-                      <polyline points={polyStr} fill="none" stroke={theme.color.warning}
+                      <path d={pathD} fill="none" stroke={theme.color.warning}
                         strokeOpacity={0.5} strokeWidth={8} strokeLinecap="round"
                         style={{ pointerEvents: 'none' }} />
                     )}
-                    <polyline points={polyStr} fill="none"
+                    <path d={pathD} fill="none"
                       stroke={isSelected || isHighlighted ? theme.color.accent : theme.color.textFaint}
                       strokeWidth={isSelected || isHighlighted ? 3 : 2}
+                      strokeLinecap="round"
                       strokeDasharray={b.length === undefined ? '5 4' : undefined}
                       style={{ pointerEvents: 'none' }} />
                     {/* Routing-node handles — draggable, right-click to remove. */}
@@ -783,7 +850,7 @@ export function LayoutCanvas({
                         onMouseDown={(e) => onWaypointMouseDown(b.id, i, b.waypoints![i]!, e)}
                         onContextMenu={(e) => removeWaypoint(b.id, i, e)}
                       >
-                        <title>{`Routing node on ${b.refdes} — ${wireNames}\nDrag to move, right-click to remove.`}</title>
+                        <title>{`Routing node on ${b.refdes} — ${signalNames}\nDrag to move, right-click to remove.`}</title>
                       </circle>
                     ))}
                   </g>
