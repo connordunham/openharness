@@ -44,6 +44,7 @@ import { useEffect, useRef } from 'react';
 import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
   SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
+  ShieldPart, ShieldType,
 } from '@openharness/core';
 import { newInstanceId, newPartId } from '@openharness/core';
 import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
@@ -109,6 +110,12 @@ const HOUSING_SHAPES: { value: ConnectorHousingShape; label: string }[] = [
   { value: 'dSub', label: 'D-sub' },
   { value: 'inline', label: 'Inline / bullet' },
   { value: 'blockTerminal', label: 'Terminal block' },
+];
+const SHIELD_TYPES: { value: ShieldType; label: string }[] = [
+  { value: 'braid', label: 'Braid' },
+  { value: 'foil', label: 'Foil' },
+  { value: 'foilBraid', label: 'Foil + braid' },
+  { value: 'served', label: 'Served (spiral)' },
 ];
 const ACCESSORY_SLOTS = [
   { key: 'lockPartId', label: 'Lock', type: 'lock' },
@@ -868,8 +875,31 @@ export function SchematicCanvas({
               const isMulti = multiSelect.has(groupKey(groupId));
               const haloColor = isSelected || isMulti ? theme.color.accent : theme.color.textFaint;
               const isTwist = group?.kind === 'twist';
+              const isShielded = !!group?.shield;
+              const shieldPart = group?.shield?.partId ? (store.doc.parts[group.shield.partId] as ShieldPart | undefined) : undefined;
+              const shieldLabel = shieldPart
+                ? SHIELD_TYPES.find((t) => t.value === shieldPart.shieldType)?.label ?? 'Shielded'
+                : 'Shielded';
               return (
                 <g key={`halo:${groupId}`}>
+                  {/* Shield jacket indicator (Connor: "add the ability to add
+                     a shield to a group of wires... multiple types of
+                     shields to differentiate between braids, foils") — a
+                     wider, dashed, metallic-gray outer stroke underneath the
+                     ordinary halo so a shielded group reads as visually
+                     distinct at a glance, regardless of twist/cable kind. */}
+                  {isShielded && (
+                    <path
+                      d={rep.path}
+                      fill="none"
+                      stroke={theme.color.textFaint}
+                      strokeOpacity={0.9}
+                      strokeWidth={(members.length > 1 ? 10 : 8) + 6}
+                      strokeDasharray="2 3"
+                      strokeLinecap="round"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
                   <path
                     d={rep.path}
                     fill="none"
@@ -881,7 +911,10 @@ export function SchematicCanvas({
                     onClick={(e) => onGroupHaloClick(groupId, e)}
                     onContextMenu={(e) => onGroupContextMenu(groupId, e)}
                   >
-                    <title>{group?.kind === 'cable' ? `Cable ${group.refdes ?? ''}` : 'Twisted pair'} ({members.length} wire{members.length === 1 ? '' : 's'})</title>
+                    <title>
+                      {group?.kind === 'cable' ? `Cable ${group.refdes ?? ''}` : 'Twisted pair'} ({members.length} wire{members.length === 1 ? '' : 's'})
+                      {isShielded ? ` — ${shieldLabel}` : ''}
+                    </title>
                   </path>
                   {isTwist && twistTickPaths(rep.routePoints).map((d, i) => (
                     <path
@@ -1592,6 +1625,36 @@ function GroupInspector({
   onClose: () => void;
 }) {
   const cablePart = group.partId ? store.doc.parts[group.partId] : undefined;
+  const shieldPart = group.shield?.partId ? (store.doc.parts[group.shield.partId] as ShieldPart | undefined) : undefined;
+
+  /** Shielding is orthogonal to twist/cable `kind` (any group can be
+   * shielded — see the `WireGroup.shield` doc comment). Toggling it on
+   * eagerly creates a `ShieldPart` the same way `setKind('cable')` eagerly
+   * creates a `CablePart` below, rather than lazily on first field edit —
+   * simpler, and every other field in this card follows the same "the part
+   * IS where you manually define things" convention once it exists. */
+  const setShielded = (shielded: boolean) => {
+    store.transact(shielded ? 'Add shield' : 'Remove shield', (draft) => {
+      const g = draft.wireGroups[group.id];
+      if (!g) return;
+      if (shielded) {
+        const partId = newPartId();
+        draft.parts[partId] = { id: partId, kind: 'shield', shieldType: 'braid', custom: {} };
+        g.shield = { partId };
+      } else {
+        g.shield = undefined;
+      }
+    });
+  };
+
+  const updateShieldPart = (mutate: (p: ShieldPart) => void) => {
+    store.transact('Edit shield', (draft) => {
+      const g = draft.wireGroups[group.id];
+      if (!g?.shield?.partId) return;
+      const p = draft.parts[g.shield.partId];
+      if (p) mutate(p as ShieldPart);
+    });
+  };
 
   const setKind = (kind: 'twist' | 'cable') => {
     store.transact('Set group kind', (draft) => {
@@ -1662,6 +1725,55 @@ function GroupInspector({
                 />
               ))}
             </div>
+          </>
+        )}
+
+        <div style={s.sectionLabel}>Shield</div>
+        <label style={s.checkboxRow}>
+          <input type="checkbox" checked={!!group.shield} onChange={(e) => setShielded(e.target.checked)} />
+          Shielded
+        </label>
+        {group.shield && shieldPart && (
+          <>
+            <label style={s.fieldLabel}>Shield type</label>
+            <select
+              style={s.input} value={shieldPart.shieldType}
+              onChange={(e) => { const v = e.target.value as ShieldType; updateShieldPart((p) => { p.shieldType = v; }); }}
+            >
+              {SHIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            <label style={s.fieldLabel}>Part number</label>
+            <input
+              style={s.input} value={shieldPart.partNumber ?? ''}
+              placeholder="pulled from an existing shield part, or type your own"
+              onChange={(e) => { const v = e.target.value; updateShieldPart((p) => { p.partNumber = v || undefined; }); }}
+            />
+            <label style={s.fieldLabel}>Manufacturer</label>
+            <input
+              style={s.input} value={shieldPart.manufacturer ?? ''}
+              onChange={(e) => { const v = e.target.value; updateShieldPart((p) => { p.manufacturer = v || undefined; }); }}
+            />
+            {(shieldPart.shieldType === 'braid' || shieldPart.shieldType === 'foilBraid') && (
+              <>
+                <label style={s.fieldLabel}>Coverage (%)</label>
+                <input
+                  style={s.input} type="number" min={0} max={100} value={shieldPart.coverage ?? ''}
+                  onChange={(e) => { const v = e.target.value; updateShieldPart((p) => { p.coverage = v === '' ? undefined : Number(v); }); }}
+                />
+              </>
+            )}
+            <label style={s.fieldLabel}>Material</label>
+            <input
+              style={s.input} value={shieldPart.material ?? ''} placeholder="e.g. tinned copper"
+              onChange={(e) => { const v = e.target.value; updateShieldPart((p) => { p.material = v || undefined; }); }}
+            />
+            <label style={s.checkboxRow}>
+              <input
+                type="checkbox" checked={!!shieldPart.drainWire}
+                onChange={(e) => { const v = e.target.checked; updateShieldPart((p) => { p.drainWire = v; }); }}
+              />
+              Drain wire
+            </label>
           </>
         )}
 

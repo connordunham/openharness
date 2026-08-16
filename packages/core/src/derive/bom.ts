@@ -84,6 +84,13 @@ export function computeBom(doc: HarnessDocument, lengths: Map<WireId, LengthResu
     }
   }
 
+  // Shields (spec follow-up: WireGroup.shield) — one BOM line per shielded
+  // group, keyed like everything else by the shield's own PartId so
+  // multiple groups sharing the same catalog shield roll up together.
+  for (const group of Object.values(doc.wireGroups)) {
+    if (group.shield) add(group.shield.partId, group.refdes ?? group.id, 1, 'ea');
+  }
+
   for (const [wireId, wire] of Object.entries(doc.wires)) {
     const result = lengths.get(wireId);
     const status = result?.status ?? 'unplaced';

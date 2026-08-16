@@ -26,10 +26,10 @@ import { ComponentIcon } from './icons.js';
 
 type PartKind = Part['kind'];
 
-const PART_KINDS: PartKind[] = ['connector', 'wire', 'cable', 'splice', 'terminal', 'resistor', 'diode', 'covering', 'accessory', 'generic'];
+const PART_KINDS: PartKind[] = ['connector', 'wire', 'cable', 'shield', 'splice', 'terminal', 'resistor', 'diode', 'covering', 'accessory', 'generic'];
 
 const PART_KIND_LABEL: Record<PartKind, string> = {
-  connector: 'Connectors', wire: 'Wires', cable: 'Cables', splice: 'Splices', terminal: 'Terminals',
+  connector: 'Connectors', wire: 'Wires', cable: 'Cables', shield: 'Shields', splice: 'Splices', terminal: 'Terminals',
   resistor: 'Resistors', diode: 'Diodes', covering: 'Coverings', accessory: 'Accessories', generic: 'Generic',
 };
 
@@ -158,6 +158,9 @@ export function BomPane({ store, hoveredComponentId, onHoverComponent }: BomPane
             break;
           case 'cable':
             part = { ...base, kind: 'cable' };
+            break;
+          case 'shield':
+            part = { ...base, kind: 'shield', shieldType: 'braid' };
             break;
           case 'splice':
             part = { ...base, kind: 'splice' };

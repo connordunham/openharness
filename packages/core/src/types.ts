@@ -292,7 +292,44 @@ export interface WireGroup {
   /** Jacket color, `kind: 'cable'` only. [inferred] */
   color?: string;
   schematicPosition?: Point;
+  /** [inferred] — Connor's follow-up: "add the ability to add a shield to a
+   * group of wires... shield should have its own set of properties which
+   * can be manually defined or can be pulled from the designed [shield]
+   * part number if available." A shield is orthogonal to `kind` (twist)
+   * or cable) — any group, twisted or not, can be shielded — so this is a
+   * separate optional field rather than a third `kind`. `partId` references
+   * a `ShieldPart` in `doc.parts`, following the exact same lazy-create
+   * pattern already used for `Wire.partId`/`WireGroup.partId` elsewhere in
+   * this file: editing any shield field creates the ShieldPart on first
+   * touch, so "manually defined" and "pulled from a part number" are the
+   * same storage — a manually-typed field *is* how a part gets its
+   * properties in this app, there being no separate live catalog lookup
+   * yet (see the parts-library browser's own scope note). Referencing an
+   * *existing* ShieldPart (created for an earlier shielded group) is how
+   * "pulled from the designed part number" plays out in practice.
+   * Termination fields (spec follow-up, schematic/visual/text-note form)
+   * live on `ShieldTermination`, added alongside this. */
+  shield?: { partId?: PartId; termination?: ShieldTermination };
   custom: Record<string, unknown>;
+}
+
+/** [inferred] — coarse shield construction families (Connor: "multiple
+ * types of shields to differentiate between braids, foils"). `foilBraid` is
+ * the common combo construction (foil layer + braid over it); `served` is a
+ * spiral-wrapped (not woven) wire shield — distinct enough from a braid to
+ * call out separately per the same request. */
+export type ShieldType = 'braid' | 'foil' | 'foilBraid' | 'served';
+
+/** [inferred] — Connor's follow-up: "Shields should have method of
+ * specifying termination both in schematic form, visual form, and through
+ * text notes that can point to the backshell." `style` drives the schematic
+ * glyph (see SchematicCanvas's shield-termination rendering); `note` is the
+ * free-text field that can reference a backshell/connector by name since
+ * there's no separate backshell-part linkage in the data model yet. */
+export interface ShieldTermination {
+  style?: 'pigtail' | 'lugTo360' | 'drainWire' | 'none';
+  /** Free text — e.g. "terminates to backshell BS1 EMI band". */
+  note?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +444,19 @@ export interface TerminalPart extends PartBase { kind: 'terminal'; terminalKind?
 export interface ResistorPart extends PartBase { kind: 'resistor'; resistanceOhms?: number }
 export interface DiodePart extends PartBase { kind: 'diode' }
 export interface CablePart extends PartBase { kind: 'cable'; coreCount?: number; shielded?: boolean }
+/** [inferred] — backs `WireGroup.shield.partId` (spec follow-up: shield
+ * data model). `coverage` is braid-only (percent, 0-100); `foil`/`served`
+ * shields don't have a meaningful coverage figure so it's left blank for
+ * those. `drainWire` flags a bare drain conductor run alongside a foil
+ * shield for termination, common practice for foil-only constructions. */
+export interface ShieldPart extends PartBase {
+  kind: 'shield';
+  shieldType: ShieldType;
+  coverage?: number;
+  material?: string;
+  outerDiameter?: number;
+  drainWire?: boolean;
+}
 export interface AccessoryPart extends PartBase {
   kind: 'accessory';
   accessoryType?: 'contact' | 'lock' | 'dustCover' | 'backshell' | 'boot' | 'cavitySeal';
@@ -415,7 +465,7 @@ export interface GenericPart extends PartBase { kind: 'generic' }
 
 export type Part =
   | ConnectorPart | WirePart | CablePart | SplicePart | TerminalPart
-  | ResistorPart | DiodePart | CoveringPart | AccessoryPart | GenericPart;
+  | ResistorPart | DiodePart | CoveringPart | AccessoryPart | ShieldPart | GenericPart;
 
 // ---------------------------------------------------------------------------
 // Derived model (spec §5.3, §6)

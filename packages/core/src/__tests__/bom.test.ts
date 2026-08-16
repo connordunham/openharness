@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { computeRoutes } from '../derive/routing.js';
 import { computeLengths } from '../derive/length.js';
 import { computeBom } from '../derive/bom.js';
-import { doc, withEntities, connector, cavity, wire, bundle, cavityEndpoint } from './helpers.js';
-import type { ConnectorPart, WirePart } from '../types.js';
+import { doc, withEntities, connector, cavity, wire, bundle, cavityEndpoint, freeEndpoint } from './helpers.js';
+import type { ConnectorPart, WirePart, ShieldPart } from '../types.js';
 
 function bomFor(d: ReturnType<typeof doc>) {
   return computeBom(d, computeLengths(d, computeRoutes(d)));
@@ -81,5 +81,35 @@ describe('computeBom', () => {
       components: [connector('c1', 'C1', [], { partId: 'p1', excludeFromBom: true })],
     });
     expect(bomFor(d)).toHaveLength(0);
+  });
+
+  it('rolls a shielded WireGroup up into its own BOM line, keyed by the shield part', () => {
+    const d = withEntities(doc(), {
+      wires: [wire('w1', 'W1', freeEndpoint(), freeEndpoint())],
+    });
+    d.wireGroups['g1'] = {
+      id: 'g1', kind: 'twist', refdes: 'SH1', memberWireIds: ['w1'], memberGroupIds: [],
+      shield: { partId: 'p-shield' }, custom: {},
+    };
+    d.parts['p-shield'] = {
+      id: 'p-shield', kind: 'shield', shieldType: 'braid', coverage: 85, partNumber: 'SHD-1', price: 1.2, custom: {},
+    } as ShieldPart;
+
+    const bom = bomFor(d);
+    const line = bom.find((l) => l.partId === 'p-shield')!;
+    expect(line).toBeDefined();
+    expect(line.quantity).toBe(1);
+    expect(line.refdes).toEqual(['SH1']);
+    expect(line.partNumber).toBe('SHD-1');
+  });
+
+  it('an unassigned shield (no shield.partId) still produces an "unassigned" warning line', () => {
+    const d = withEntities(doc(), {});
+    d.wireGroups['g1'] = {
+      id: 'g1', kind: 'twist', memberWireIds: [], memberGroupIds: [], shield: {}, custom: {},
+    };
+    const bom = bomFor(d);
+    const line = bom.find((l) => l.warnings.includes('no part assigned') && l.unit === 'ea');
+    expect(line).toBeDefined();
   });
 });
