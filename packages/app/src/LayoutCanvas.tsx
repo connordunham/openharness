@@ -25,15 +25,28 @@
  * are the one component type that only exists here — they're pure layout
  * topology, so they're created from this pane's toolbar, not Schematic's.
  *
- * Scope note: this first pass covers placement + bundle authoring, which is
- * what makes automatic routing work end to end. Bundle waypoints (bending a
- * bundle's physical path around obstacles, `Bundle.waypoints`) and a formboard
- * background image are real spec features left for a later pass — the data
- * model already has the field, this UI just draws bundles as straight lines
- * between their two endpoints for now.
+ * Routing nodes (Connor's follow-up: "need to be able to add routing
+ * nodes"): a bundle's path is drawn through `Bundle.waypoints` — grabbing
+ * the bundle's line and dragging inserts a bend at that point; grabbing an
+ * existing bend's handle moves it; right-clicking a handle removes it. This
+ * is the field the file header used to flag as "left for a later pass" —
+ * it's now the actual routing-node mechanism, distinct from branch points
+ * (which are full topology vertices other bundles can also connect to) —
+ * a plain waypoint just bends one bundle's own path.
+ *
+ * Every node you can hover — a placed component or a bundle's waypoint —
+ * carries a native `<title>` tooltip listing which wires currently route
+ * through it (Connor: "show which wires pass through it... on hover"),
+ * computed from `derived.bundleContents` (which wires' routes touch each
+ * bundle) rather than tracked separately, so it can never drift from the
+ * routing engine's own answer.
+ *
+ * Scope note: this first pass covers placement + bundle authoring + bundle
+ * waypoints, which is what makes automatic routing work end to end. A
+ * formboard background image is a real spec feature left for a later pass.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { HarnessStore, Component, Point } from '@openharness/core';
 import { newInstanceId, computeDerivedModel } from '@openharness/core';
 import { theme } from './theme.js';
@@ -53,11 +66,43 @@ interface Dragging {
   posStartY: number;
 }
 
+/** Dragging a single point within a bundle's `waypoints` array — separate
+ * from `Dragging` (which moves a whole component) since it targets an
+ * index inside a bundle rather than a component id. */
+interface DraggingWaypoint {
+  bundleId: string;
+  index: number;
+  pointerStartX: number;
+  pointerStartY: number;
+  posStartX: number;
+  posStartY: number;
+}
+
 function toPx(mm: Point): Point {
   return { x: mm.x * PX_PER_MM, y: mm.y * PX_PER_MM };
 }
 function toMm(px: Point): Point {
   return { x: px.x / PX_PER_MM, y: px.y / PX_PER_MM };
+}
+
+/** Squared distance from `p` to the segment `a`-`b`, all in the same space
+ * (mm here) — used to find which segment of a bundle's path a click landed
+ * nearest to, so a new routing node is inserted in the right place rather
+ * than always at the end. */
+function distToSegmentSq(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+  const projX = a.x + t * dx;
+  const projY = a.y + t * dy;
+  return (p.x - projX) ** 2 + (p.y - projY) ** 2;
+}
+
+function wireTooltip(wireIds: string[], doc: HarnessStore['doc']): string {
+  if (wireIds.length === 0) return 'No wires route through this node yet.';
+  const names = [...new Set(wireIds)].map((id) => doc.wires[id]?.refdes ?? id).sort();
+  return `Wires through this node (${names.length}): ${names.join(', ')}`;
 }
 
 function nextLayoutGrid(store: HarnessStore): Point {
@@ -74,10 +119,35 @@ interface Props {
 export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Props) {
   const [selected, setSelected] = useState<Selection>(null);
   const [dragging, setDragging] = useState<Dragging | null>(null);
+  const [draggingWaypoint, setDraggingWaypoint] = useState<DraggingWaypoint | null>(null);
   const [pendingBundleFrom, setPendingBundleFrom] = useState<string | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
 
   const doc = store.doc;
   const derived = computeDerivedModel(doc);
+
+  /** True mm-space position of a mousedown/click, using the SVG's own
+   * bounding rect — needed (unlike the simple delta-drags elsewhere in this
+   * file) to figure out *where along a bundle's path* a new routing node
+   * should be inserted. */
+  const clientToMm = useCallback((clientX: number, clientY: number): Point => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return toMm({ x: clientX - rect.left, y: clientY - rect.top });
+  }, []);
+
+  const wiresThroughComponent = useCallback(
+    (componentId: string): string[] => {
+      const ids: string[] = [];
+      for (const b of Object.values(doc.bundles)) {
+        if (b.sourceId === componentId || b.targetId === componentId) {
+          ids.push(...(derived.bundleContents.get(b.id) ?? []));
+        }
+      }
+      return ids;
+    },
+    [doc.bundles, derived.bundleContents],
+  );
 
   const placed = Object.values(doc.components).filter((c) => !!c.layoutPosition);
   const unplaced = Object.values(doc.components).filter((c) => !c.layoutPosition && c.type !== 'branchPoint');
@@ -142,20 +212,83 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
 
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (!dragging) return;
-      const dxPx = e.clientX - dragging.pointerStartX;
-      const dyPx = e.clientY - dragging.pointerStartY;
-      const dMm = toMm({ x: dxPx, y: dyPx });
-      const x = dragging.posStartX + dMm.x;
-      const y = dragging.posStartY + dMm.y;
-      store.transact('Move component (layout)', (draft) => {
-        const c = draft.components[dragging.id];
-        if (c) c.layoutPosition = { x, y };
+      if (dragging) {
+        const dxPx = e.clientX - dragging.pointerStartX;
+        const dyPx = e.clientY - dragging.pointerStartY;
+        const dMm = toMm({ x: dxPx, y: dyPx });
+        const x = dragging.posStartX + dMm.x;
+        const y = dragging.posStartY + dMm.y;
+        store.transact('Move component (layout)', (draft) => {
+          const c = draft.components[dragging.id];
+          if (c) c.layoutPosition = { x, y };
+        });
+      } else if (draggingWaypoint) {
+        const dxPx = e.clientX - draggingWaypoint.pointerStartX;
+        const dyPx = e.clientY - draggingWaypoint.pointerStartY;
+        const dMm = toMm({ x: dxPx, y: dyPx });
+        const x = draggingWaypoint.posStartX + dMm.x;
+        const y = draggingWaypoint.posStartY + dMm.y;
+        store.transact('Move routing node', (draft) => {
+          const b = draft.bundles[draggingWaypoint.bundleId];
+          if (b?.waypoints?.[draggingWaypoint.index]) b.waypoints[draggingWaypoint.index] = { x, y };
+        });
+      }
+    },
+    [dragging, draggingWaypoint, store],
+  );
+  const onMouseUp = useCallback(() => { setDragging(null); setDraggingWaypoint(null); }, []);
+
+  /** Grabbing a bundle's own line (not an existing waypoint handle) inserts
+   * a new routing node at the click position, in the correct spot along the
+   * path — found by comparing the click to every existing segment
+   * (source -> waypoints... -> target) and picking the nearest one. */
+  const onBundleMouseDown = useCallback(
+    (bundleId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      const bundle = doc.bundles[bundleId];
+      const a = bundle && doc.components[bundle.sourceId];
+      const b = bundle && doc.components[bundle.targetId];
+      if (!bundle || !a?.layoutPosition || !b?.layoutPosition) return;
+      setSelected({ kind: 'bundle', id: bundleId });
+      const clickMm = clientToMm(e.clientX, e.clientY);
+      const pts = [a.layoutPosition, ...(bundle.waypoints ?? []), b.layoutPosition];
+      let insertAt = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const d = distToSegmentSq(clickMm, pts[i]!, pts[i + 1]!);
+        if (d < bestDist) { bestDist = d; insertAt = i; }
+      }
+      store.transact('Add routing node', (draft) => {
+        const bd = draft.bundles[bundleId];
+        if (!bd) return;
+        if (!bd.waypoints) bd.waypoints = [];
+        bd.waypoints.splice(insertAt, 0, clickMm);
+      });
+      setDraggingWaypoint({ bundleId, index: insertAt, pointerStartX: e.clientX, pointerStartY: e.clientY, posStartX: clickMm.x, posStartY: clickMm.y });
+    },
+    [doc, store, clientToMm],
+  );
+
+  const onWaypointMouseDown = useCallback(
+    (bundleId: string, index: number, point: Point, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setSelected({ kind: 'bundle', id: bundleId });
+      setDraggingWaypoint({ bundleId, index, pointerStartX: e.clientX, pointerStartY: e.clientY, posStartX: point.x, posStartY: point.y });
+    },
+    [],
+  );
+
+  const removeWaypoint = useCallback(
+    (bundleId: string, index: number, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      store.transact('Remove routing node', (draft) => {
+        const b = draft.bundles[bundleId];
+        b?.waypoints?.splice(index, 1);
       });
     },
-    [dragging, store],
+    [store],
   );
-  const onMouseUp = useCallback(() => setDragging(null), []);
 
   const deleteBundle = useCallback(
     (bundleId: string) => {
@@ -197,12 +330,16 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
           </div>
         )}
         {pendingBundleFrom && <span style={s.hint}>Click another component to connect a bundle, or click it again to cancel.</span>}
+        {!pendingBundleFrom && Object.keys(doc.bundles).length > 0 && (
+          <span style={s.hintMuted}>Drag a bundle's line to add a routing node; hover any node to see which wires pass through it.</span>
+        )}
       </div>
 
       <div style={s.body}>
         <div style={s.canvasScroll} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
           <div style={{ position: 'relative', width: maxX, height: maxY }}>
             <svg
+              ref={svgRef}
               width={maxX} height={maxY} style={s.svg}
               onClick={(e) => { if (e.target === e.currentTarget) setSelected(null); }}
             >
@@ -221,16 +358,40 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                 const pt = toPx(t.layoutPosition);
                 const from = { x: pa.x + NODE_W / 2, y: pa.y + NODE_H / 2 };
                 const to = { x: pt.x + NODE_W / 2, y: pt.y + NODE_H / 2 };
+                const waypointsPx = (b.waypoints ?? []).map(toPx);
+                const polyPoints = [from, ...waypointsPx, to];
+                const polyStr = polyPoints.map((p) => `${p.x},${p.y}`).join(' ');
                 const isSelected = selected?.kind === 'bundle' && selected.id === b.id;
+                const wireNames = wireTooltip(derived.bundleContents.get(b.id) ?? [], doc);
                 return (
                   <g key={b.id}>
-                    <line x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="transparent" strokeWidth={14}
-                      style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'bundle', id: b.id }); }} />
-                    <line x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                    {/* Fat invisible hit-target; grabbing anywhere on it (off
+                       an existing routing-node handle) inserts a new bend. */}
+                    <polyline points={polyStr} fill="none" stroke="transparent" strokeWidth={14}
+                      style={{ cursor: 'crosshair' }}
+                      onMouseDown={(e) => onBundleMouseDown(b.id, e)}
+                      onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'bundle', id: b.id }); }}>
+                      <title>{`${b.refdes} — ${wireNames}`}</title>
+                    </polyline>
+                    <polyline points={polyStr} fill="none"
                       stroke={isSelected ? theme.color.accent : theme.color.textFaint}
                       strokeWidth={isSelected ? 3 : 2}
                       strokeDasharray={b.length === undefined ? '5 4' : undefined}
                       style={{ pointerEvents: 'none' }} />
+                    {/* Routing-node handles — draggable, right-click to remove. */}
+                    {waypointsPx.map((wp, i) => (
+                      <circle
+                        key={i} cx={wp.x} cy={wp.y} r={4.5}
+                        fill={theme.color.surface}
+                        stroke={isSelected ? theme.color.accent : theme.color.textFaint}
+                        strokeWidth={2}
+                        style={{ cursor: 'grab' }}
+                        onMouseDown={(e) => onWaypointMouseDown(b.id, i, b.waypoints![i]!, e)}
+                        onContextMenu={(e) => removeWaypoint(b.id, i, e)}
+                      >
+                        <title>{`Routing node on ${b.refdes} — ${wireNames}\nDrag to move, right-click to remove.`}</title>
+                      </circle>
+                    ))}
                   </g>
                 );
               })}
@@ -260,7 +421,9 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                       strokeWidth={isSelected || isPendingFrom ? 2 : 1}
                       onMouseDown={(e) => onNodeMouseDown(c, e)}
                       style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
-                    />
+                    >
+                      <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
+                    </rect>
                     <foreignObject x={p.x + 5} y={p.y + 4} width={13} height={13} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
                       <ComponentIcon type={c.type} size={11} />
                     </foreignObject>
@@ -294,7 +457,12 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
             )}
 
             {selectedBundle && (
-              <BundleInspector bundle={selectedBundle} onSetLength={(mm) => setBundleLength(selectedBundle.id, mm)} onDelete={() => deleteBundle(selectedBundle.id)} />
+              <BundleInspector
+                bundle={selectedBundle}
+                onSetLength={(mm) => setBundleLength(selectedBundle.id, mm)}
+                onDelete={() => deleteBundle(selectedBundle.id)}
+                onClearRoutingNodes={() => store.transact('Clear routing nodes', (draft) => { const b = draft.bundles[selectedBundle.id]; if (b) b.waypoints = []; })}
+              />
             )}
           </div>
         </div>
@@ -323,7 +491,15 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
   );
 }
 
-function BundleInspector({ bundle, onSetLength, onDelete }: { bundle: { id: string; refdes: string; length?: number }; onSetLength: (mm: number | undefined) => void; onDelete: () => void }) {
+function BundleInspector({
+  bundle, onSetLength, onDelete, onClearRoutingNodes,
+}: {
+  bundle: { id: string; refdes: string; length?: number; waypoints?: Point[] };
+  onSetLength: (mm: number | undefined) => void;
+  onDelete: () => void;
+  onClearRoutingNodes: () => void;
+}) {
+  const nodeCount = bundle.waypoints?.length ?? 0;
   return (
     <div style={{ position: 'absolute', left: 20, top: 20, zIndex: 3 }}>
       <div style={s.card}>
@@ -337,6 +513,12 @@ function BundleInspector({ bundle, onSetLength, onDelete }: { bundle: { id: stri
             value={bundle.length ?? ''}
             onChange={(e) => { const v = e.target.value; onSetLength(v === '' ? undefined : Number(v)); }}
           />
+          {nodeCount > 0 && (
+            <div style={s.kvRow}>
+              <span style={s.kvKey}>Routing nodes</span>
+              <button style={s.linkBtn} onClick={onClearRoutingNodes}>{nodeCount} — clear</button>
+            </div>
+          )}
           <button style={s.dangerBtn} onClick={onDelete}>Delete bundle</button>
         </div>
       </div>
@@ -353,6 +535,7 @@ const s = {
   unplacedLabel: { fontSize: 11.5, color: theme.color.textFaint, fontWeight: 500 },
   unplacedChip: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', border: `1px dashed ${theme.color.border}`, borderRadius: 999, background: 'transparent', color: theme.color.textMuted, cursor: 'pointer', fontSize: 11.5 },
   hint: { color: theme.color.accent, fontSize: 12, fontWeight: 500, marginLeft: 6 },
+  hintMuted: { color: theme.color.textFaint, fontSize: 11.5, marginLeft: 6 },
 
   body: { flex: 1, display: 'flex', minHeight: 0 },
   canvasScroll: { flex: 1, overflow: 'auto' },
@@ -379,6 +562,7 @@ const s = {
   kvKey: { color: theme.color.textFaint },
   kvVal: { color: theme.color.textStrong, fontWeight: 500 },
   fieldLabel: { fontSize: 11.5, color: theme.color.textFaint, fontWeight: 500 },
+  linkBtn: { border: 'none', background: 'transparent', color: theme.color.accent, cursor: 'pointer', fontSize: 12.5, fontWeight: 500, padding: 0 },
   input: { padding: '6px 8px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, fontSize: 12.5, background: theme.color.surface, color: theme.color.textStrong, boxSizing: 'border-box', width: '100%' },
   dangerBtn: { marginTop: 6, padding: '6px 10px', border: `1px solid ${theme.color.dangerBorder}`, borderRadius: theme.radius.control, background: theme.color.dangerSoft, color: theme.color.danger, cursor: 'pointer', fontSize: 12 },
 } satisfies Record<string, React.CSSProperties | ((...args: never[]) => React.CSSProperties)>;
