@@ -44,6 +44,20 @@
  * Scope note: this first pass covers placement + bundle authoring + bundle
  * waypoints, which is what makes automatic routing work end to end. A
  * formboard background image is a real spec feature left for a later pass.
+ *
+ * Visual cleanup (Connor: "the actual routing and connector visuals don't
+ * look clean"): bundle lines used to run from raw node CENTER to raw node
+ * CENTER, so most of every line was hidden behind the node's own fill and
+ * what little showed crossed corners at odd angles for any pair of nodes
+ * that weren't roughly on the same row. `outlinePoint()` now clips every
+ * bundle line to the node's actual outline (rectangle, or a small circle
+ * for branch points) so it visibly plugs into the part it's leaving or
+ * entering. Branch points also render as plain junction dots rather than
+ * full component boxes, since they're pure layout topology (spec §4.2),
+ * not a physical part with an icon and label to show. The per-node
+ * "start a bundle" handle is now dimmed until it's actually relevant
+ * (hovered/selected, or a connect is already in progress) instead of
+ * sitting at full opacity on every node all the time.
  */
 
 import { useCallback, useRef, useState } from 'react';
@@ -55,6 +69,7 @@ import { ComponentIcon, connectorAppearance } from './icons.js';
 const PX_PER_MM = 4;
 const NODE_W = 76;
 const NODE_H = 32;
+const BRANCH_R = 7;
 
 type Selection = { kind: 'component'; id: string } | { kind: 'bundle'; id: string } | null;
 
@@ -97,6 +112,35 @@ function distToSegmentSq(p: Point, a: Point, b: Point): number {
   const projX = a.x + t * dx;
   const projY = a.y + t * dy;
   return (p.x - projX) ** 2 + (p.y - projY) ** 2;
+}
+
+/** Point on a node's actual outline where a bundle line to `otherCenter`
+ * should visibly terminate (Connor: "the actual routing and connector
+ * visuals do[n't] look clean"). Bundle lines used to run from raw node
+ * CENTER to raw node CENTER — hidden behind the fill for most of their
+ * length, then reappearing wherever that straight line happened to cross
+ * the rectangle's boundary, which crossed corners at odd angles for any
+ * pair of nodes that weren't roughly on the same row. This clips the line
+ * to the real outline instead: a rectangle for ordinary components, a
+ * small circle for branch points (rendered as plain topology dots, not
+ * boxes — see the placed-node render below), so every bundle visibly
+ * plugs into the edge of the part it's leaving/entering. */
+function outlinePoint(node: Component, topLeft: Point, otherCenter: Point): Point {
+  const cx = topLeft.x + NODE_W / 2;
+  const cy = topLeft.y + NODE_H / 2;
+  const dx = otherCenter.x - cx;
+  const dy = otherCenter.y - cy;
+  if (dx === 0 && dy === 0) return { x: cx, y: cy };
+  if (node.type === 'branchPoint') {
+    const len = Math.hypot(dx, dy);
+    return { x: cx + (dx / len) * BRANCH_R, y: cy + (dy / len) * BRANCH_R };
+  }
+  const halfW = NODE_W / 2;
+  const halfH = NODE_H / 2;
+  const tx = dx !== 0 ? halfW / Math.abs(dx) : Infinity;
+  const ty = dy !== 0 ? halfH / Math.abs(dy) : Infinity;
+  const t = Math.min(tx, ty);
+  return { x: cx + dx * t, y: cy + dy * t };
 }
 
 function wireTooltip(wireIds: string[], doc: HarnessStore['doc']): string {
@@ -356,9 +400,16 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                 if (!a?.layoutPosition || !t?.layoutPosition) return null;
                 const pa = toPx(a.layoutPosition);
                 const pt = toPx(t.layoutPosition);
-                const from = { x: pa.x + NODE_W / 2, y: pa.y + NODE_H / 2 };
-                const to = { x: pt.x + NODE_W / 2, y: pt.y + NODE_H / 2 };
                 const waypointsPx = (b.waypoints ?? []).map(toPx);
+                // Clip to each node's real outline (see outlinePoint) rather
+                // than raw center-to-center, aiming at the first/last bend
+                // (or the other node's center if there are no bends) so the
+                // line still points the right direction when routed through
+                // waypoints.
+                const aAimAt = waypointsPx[0] ?? { x: pt.x + NODE_W / 2, y: pt.y + NODE_H / 2 };
+                const tAimAt = waypointsPx[waypointsPx.length - 1] ?? { x: pa.x + NODE_W / 2, y: pa.y + NODE_H / 2 };
+                const from = outlinePoint(a, pa, aAimAt);
+                const to = outlinePoint(t, pt, tAimAt);
                 const polyPoints = [from, ...waypointsPx, to];
                 const polyStr = polyPoints.map((p) => `${p.x},${p.y}`).join(' ');
                 const isSelected = selected?.kind === 'bundle' && selected.id === b.id;
@@ -401,6 +452,16 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                 const isSelected = selected?.kind === 'component' && selected.id === c.id;
                 const isPendingFrom = pendingBundleFrom === c.id;
                 const isHovered = hoveredComponentId === c.id;
+                const isBranch = c.type === 'branchPoint';
+                const cx = p.x + NODE_W / 2;
+                const cy = p.y + NODE_H / 2;
+                // The little connect-handle used to sit at full opacity on
+                // every node all the time — with more than a few parts
+                // placed that read as a field of stray circles. Dim it
+                // until it's actually relevant (hovered/selected, or a
+                // bundle-connect is in progress and every handle is a
+                // valid target).
+                const handleActive = isHovered || isSelected || isPendingFrom || !!pendingBundleFrom;
                 return (
                   <g
                     key={c.id}
@@ -408,33 +469,70 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                     onMouseLeave={() => onHoverComponent?.(null)}
                   >
                     {isHovered && !isSelected && (
-                      <rect
-                        x={p.x - 4} y={p.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={theme.radius.node + 3}
-                        fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
-                        style={{ pointerEvents: 'none' }}
-                      />
+                      isBranch ? (
+                        <circle
+                          cx={cx} cy={cy} r={BRANCH_R + 5}
+                          fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      ) : (
+                        <rect
+                          x={p.x - 4} y={p.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={theme.radius.node + 3}
+                          fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      )
                     )}
-                    <rect
-                      x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx={theme.radius.node}
-                      fill={theme.color.nodeFill}
-                      stroke={isPendingFrom ? theme.color.accent : isSelected ? theme.color.accent : theme.color.nodeBorder}
-                      strokeWidth={isSelected || isPendingFrom ? 2 : 1}
-                      onMouseDown={(e) => onNodeMouseDown(c, e)}
-                      style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
-                    >
-                      <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
-                    </rect>
-                    <foreignObject x={p.x + 5} y={p.y + 4} width={13} height={13} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
-                      <ComponentIcon type={c.type} size={11} {...connectorAppearance(c, doc)} />
-                    </foreignObject>
-                    <text x={p.x + 21} y={p.y + NODE_H / 2 + 4} fontSize={11.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
-                      {c.refdes}
-                    </text>
+                    {isBranch ? (
+                      // Branch points are pure layout topology (spec §4.2),
+                      // not a physical part — a plain junction dot reads
+                      // much cleaner than a full component box with an
+                      // icon and label crammed into it.
+                      <circle
+                        cx={cx} cy={cy} r={BRANCH_R}
+                        fill={theme.color.textFaint}
+                        stroke={isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder}
+                        strokeWidth={isSelected || isPendingFrom ? 2.5 : 1.5}
+                        onMouseDown={(e) => onNodeMouseDown(c, e)}
+                        style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
+                      >
+                        <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
+                      </circle>
+                    ) : (
+                      <rect
+                        x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx={theme.radius.node}
+                        fill={theme.color.nodeFill}
+                        stroke={isPendingFrom ? theme.color.accent : isSelected ? theme.color.accent : theme.color.nodeBorder}
+                        strokeWidth={isSelected || isPendingFrom ? 2 : 1}
+                        onMouseDown={(e) => onNodeMouseDown(c, e)}
+                        style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
+                      >
+                        <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
+                      </rect>
+                    )}
+                    {!isBranch && (
+                      <>
+                        <foreignObject x={p.x + 5} y={p.y + 4} width={13} height={13} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
+                          <ComponentIcon type={c.type} size={11} {...connectorAppearance(c, doc)} />
+                        </foreignObject>
+                        <text x={p.x + 21} y={p.y + NODE_H / 2 + 4} fontSize={11.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
+                          {c.refdes}
+                        </text>
+                      </>
+                    )}
+                    {isBranch && (
+                      <text x={cx + BRANCH_R + 6} y={cy + 4} fontSize={10.5} fontWeight={600} fill={theme.color.textMuted} style={{ pointerEvents: 'none' }}>
+                        {c.refdes}
+                      </text>
+                    )}
                     <circle
                       cx={p.x + NODE_W} cy={p.y + NODE_H / 2} r={4} fill={theme.color.nodeFill} stroke={theme.color.accent} strokeWidth={1.3}
-                      style={{ cursor: 'crosshair' }}
+                      opacity={handleActive ? 1 : 0.4}
+                      style={{ cursor: 'crosshair', transition: 'opacity 100ms ease' }}
                       onClick={(e) => { e.stopPropagation(); setPendingBundleFrom(pendingBundleFrom === c.id ? null : c.id); }}
-                    />
+                    >
+                      <title>Click to start a bundle from here.</title>
+                    </circle>
                   </g>
                 );
               })}
