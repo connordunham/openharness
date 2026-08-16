@@ -50,6 +50,8 @@ import { newInstanceId, newPartId } from '@openharness/core';
 import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
+import { nextLayoutGrid } from './layoutGrid.js';
+import { useCanvasPan } from './canvasPan.js';
 
 interface Props {
   store: HarnessStore;
@@ -186,6 +188,48 @@ function twistTickPaths(points: Point[], spacing = 12, tickLen = 5): string[] {
   return ticks;
 }
 
+/** One shield termination mark — a dashed ellipse encircling the group's
+ * member wires near one end of the run, plus the point its label sits at.
+ * See `shieldTerminations` below for how the two (one per end) are built. */
+interface ShieldTermination {
+  center: Point;
+  rx: number;
+  ry: number;
+  labelPoint: Point;
+}
+
+/** Shield termination marks (Connor: "shields should appear like the
+ * attached image in schematic, at each end, not some shaded tube") — a
+ * dashed ellipse encircling the shielded group's member wires near EACH end
+ * of the run, not a shaded tube running the full length. Built straight
+ * from each member wire's own `from`/`to` endpoint (already resolved by the
+ * routing engine, per-row), rather than the routed path, since what needs
+ * encircling is "the wires at this end", not a point along a bend. The
+ * ellipse sits offset inward from the connector face by `INSET` so it
+ * doesn't overlap the node itself — matching the reference image, where the
+ * dashed oval sits a short distance out from the pins, not right on them. */
+function shieldTerminations(members: SceneWire[]): ShieldTermination[] {
+  if (members.length === 0) return [];
+  const INSET = 26;
+  const build = (pick: (w: SceneWire) => Point, otherPick: (w: SceneWire) => Point): ShieldTermination => {
+    const pts = members.map(pick);
+    const others = members.map(otherPick);
+    const minY = Math.min(...pts.map((p) => p.y));
+    const maxY = Math.max(...pts.map((p) => p.y));
+    const avgX = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const avgOtherX = others.reduce((s, p) => s + p.x, 0) / others.length;
+    const avgY = (minY + maxY) / 2;
+    const dir = avgOtherX >= avgX ? 1 : -1; // inset toward the other end
+    return {
+      center: { x: avgX + dir * INSET, y: avgY },
+      rx: 15,
+      ry: Math.max(16, (maxY - minY) / 2 + 9),
+      labelPoint: { x: avgX + dir * INSET, y: minY - 12 },
+    };
+  };
+  return [build((w) => w.from, (w) => w.to), build((w) => w.to, (w) => w.from)];
+}
+
 function rowEndpoint(node: SceneNode, row: SceneRow): Endpoint {
   switch (node.type) {
     case 'connector':
@@ -216,6 +260,15 @@ function nextGridPosition(store: HarnessStore): Point {
     Object.values(store.doc.components).filter((c) => !!c.schematicPosition).length +
     Object.keys(store.doc.notes).length;
   return { x: 60 + (placed % 4) * 230, y: 70 + Math.floor(placed / 4) * 180 };
+}
+
+/** Default refdes for a newly-shielded WireGroup ("SH1", "SH2"...), same
+ * auto-fill-if-empty convention as `setKind('cable')` uses for CB1/CB2 —
+ * see GroupInspector's `setShielded`. Wire groups aren't a `Component`, so
+ * this can't reuse `nextRefdes` (which counts by `Component['type']`). */
+function nextShieldRefdes(store: HarnessStore): string {
+  const count = Object.values(store.doc.wireGroups).filter((g) => !!g.shield).length;
+  return `SH${count + 1}`;
 }
 
 /** True if any wire endpoint touches this cavity — used to guard the "−"
@@ -278,6 +331,8 @@ export function SchematicCanvas({
   // after creating a new part via the toolbar, where showing the editor
   // immediately is the whole point of clicking "Add".
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { onBackgroundMouseDown } = useCanvasPan(scrollRef);
 
   const scene = computeSchematicScene(store.doc);
   const selectedComponent = selected?.kind === 'component' ? store.doc.components[selected.id] : undefined;
@@ -351,6 +406,11 @@ export function SchematicCanvas({
 
   const addConnector = useCallback(() => {
     const pos = nextGridPosition(store);
+    // Auto-place in Layout too (Connor: "layout place should happen by
+    // default as connectors are placed in schematic") — no separate manual
+    // placement step needed; the Layout pane's "Unplaced" chip is now only
+    // for components that got un-placed on purpose.
+    const layoutPos = nextLayoutGrid(store);
     let newId = '';
     store.transact('Add connector', (draft) => {
       const id = newInstanceId();
@@ -363,6 +423,7 @@ export function SchematicCanvas({
           { id: newInstanceId(), designation: '2', custom: {} },
         ],
         schematicPosition: pos,
+        layoutPosition: layoutPos,
         custom: {},
       };
     });
@@ -371,36 +432,39 @@ export function SchematicCanvas({
 
   const addSplice = useCallback(() => {
     const pos = nextGridPosition(store);
+    const layoutPos = nextLayoutGrid(store);
     let newId = '';
     store.transact('Add splice', (draft) => {
       const id = newInstanceId();
       newId = id;
       const refdes = nextRefdes(store, draft.settings.refdesPrefixes.splice ?? 'S', 'splice');
-      draft.components[id] = { id, type: 'splice', refdes, spliceKind: 'crimp', schematicPosition: pos, custom: {} };
+      draft.components[id] = { id, type: 'splice', refdes, spliceKind: 'crimp', schematicPosition: pos, layoutPosition: layoutPos, custom: {} };
     });
     selectAndEdit({ kind: 'component', id: newId });
   }, [store, selectAndEdit]);
 
   const addTerminal = useCallback(() => {
     const pos = nextGridPosition(store);
+    const layoutPos = nextLayoutGrid(store);
     let newId = '';
     store.transact('Add terminal', (draft) => {
       const id = newInstanceId();
       newId = id;
       const refdes = nextRefdes(store, draft.settings.refdesPrefixes.terminal ?? 'T', 'terminal');
-      draft.components[id] = { id, type: 'terminal', refdes, terminalKind: 'ferrule', schematicPosition: pos, custom: {} };
+      draft.components[id] = { id, type: 'terminal', refdes, terminalKind: 'ferrule', schematicPosition: pos, layoutPosition: layoutPos, custom: {} };
     });
     selectAndEdit({ kind: 'component', id: newId });
   }, [store, selectAndEdit]);
 
   const addTwoTerminal = useCallback((type: 'resistor' | 'diode') => {
     const pos = nextGridPosition(store);
+    const layoutPos = nextLayoutGrid(store);
     let newId = '';
     store.transact(`Add ${type}`, (draft) => {
       const id = newInstanceId();
       newId = id;
       const refdes = nextRefdes(store, draft.settings.refdesPrefixes[type] ?? (type === 'resistor' ? 'R' : 'D'), type);
-      draft.components[id] = { id, type, refdes, schematicPosition: pos, custom: {} };
+      draft.components[id] = { id, type, refdes, schematicPosition: pos, layoutPosition: layoutPos, custom: {} };
     });
     selectAndEdit({ kind: 'component', id: newId });
   }, [store, selectAndEdit]);
@@ -837,7 +901,11 @@ export function SchematicCanvas({
           </span>
         )}
       </div>
-      <div style={s.canvasScroll} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+      <div
+        ref={scrollRef} style={s.canvasScroll}
+        onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+        onMouseDown={onBackgroundMouseDown}
+      >
         <div style={{ position: 'relative', width: maxX, height: maxY }}>
           <svg
             width={maxX} height={maxY} style={s.canvasSvg}
@@ -882,24 +950,37 @@ export function SchematicCanvas({
                 : 'Shielded';
               return (
                 <g key={`halo:${groupId}`}>
-                  {/* Shield jacket indicator (Connor: "add the ability to add
-                     a shield to a group of wires... multiple types of
-                     shields to differentiate between braids, foils") — a
-                     wider, dashed, metallic-gray outer stroke underneath the
-                     ordinary halo so a shielded group reads as visually
-                     distinct at a glance, regardless of twist/cable kind. */}
-                  {isShielded && (
-                    <path
-                      d={rep.path}
-                      fill="none"
-                      stroke={theme.color.textFaint}
-                      strokeOpacity={0.9}
-                      strokeWidth={(members.length > 1 ? 10 : 8) + 6}
-                      strokeDasharray="2 3"
-                      strokeLinecap="round"
-                      style={{ pointerEvents: 'none' }}
-                    />
-                  )}
+                  {/* Shield termination marks (Connor: "shields should
+                     appear like the attached image in schematic, at each
+                     end, not some shaded tube") — a dashed ellipse
+                     encircling the group's member wires near EACH end of
+                     the run (see shieldTerminations), labeled with the
+                     shield's own refdes (SH1, SH2...), rather than a shaded
+                     tube running the whole length. */}
+                  {isShielded && shieldTerminations(members).map((mark, i) => (
+                    <g key={i}>
+                      <ellipse
+                        cx={mark.center.x} cy={mark.center.y} rx={mark.rx} ry={mark.ry}
+                        fill="none"
+                        stroke={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
+                        strokeWidth={1.4}
+                        strokeDasharray="4 3"
+                        style={{ cursor: 'pointer' }}
+                        onClick={(e) => onGroupHaloClick(groupId, e)}
+                        onContextMenu={(e) => onGroupContextMenu(groupId, e)}
+                      >
+                        <title>{`${group?.refdes ?? 'Shield'} — ${shieldLabel} termination`}</title>
+                      </ellipse>
+                      <text
+                        x={mark.labelPoint.x} y={mark.labelPoint.y} textAnchor="middle"
+                        fontSize={11} fontWeight={600}
+                        fill={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        {group?.refdes ?? 'SHIELD'}
+                      </text>
+                    </g>
+                  ))}
                   <path
                     d={rep.path}
                     fill="none"
@@ -1641,6 +1722,7 @@ function GroupInspector({
         const partId = newPartId();
         draft.parts[partId] = { id: partId, kind: 'shield', shieldType: 'braid', custom: {} };
         g.shield = { partId };
+        if (!g.refdes) g.refdes = nextShieldRefdes(store);
       } else {
         g.shield = undefined;
       }
@@ -2049,7 +2131,7 @@ const s = {
     background: theme.color.surface, color: theme.color.textStrong, cursor: 'pointer', fontSize: 12.5, fontWeight: 500,
   },
   wireHint: { color: theme.color.accent, fontSize: 12, marginLeft: 8, fontWeight: 500 },
-  canvasScroll: { flex: 1, overflow: 'auto' },
+  canvasScroll: { flex: 1, overflow: 'auto', cursor: 'grab' },
   canvasSvg: { display: 'block' },
 
   groupActionBtn: {

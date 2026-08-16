@@ -41,6 +41,24 @@
  * bundle) rather than tracked separately, so it can never drift from the
  * routing engine's own answer.
  *
+ * Connector glyphs + auto-orientation (Connor: "layout connectors should
+ * appear as small generalized connector shapes, cable should exit from the
+ * back of the connector symbol and these should automatically be oriented
+ * in opposite facing directions"): a placed connector/splice/terminal/etc.
+ * is drawn as a small plug glyph — a body with a tapered "nose" at the
+ * mating face and a short stub at the back where the bundle cable leaves
+ * (see `connectorGlyph`). `layoutPosition` is now interpreted as the node's
+ * CENTER (it used to be a box's top-left corner). The glyph's rotation
+ * angle is never stored — it's recomputed every render from the average
+ * direction to whatever it's bundled to (`nodeAngles`), so two connectors
+ * bundled only to each other automatically end up facing opposite ways
+ * (each one's back/cable-stub points at the other, i.e. their angles are
+ * literally 180° apart) with no manual "flip" step, and dragging a node
+ * updates both ends' orientation live. Branch points keep their old plain
+ * dot rendering (they're topology, not a physical part with a mating
+ * face) and keep using `branchOutlinePoint` — the old `outlinePoint` — for
+ * where a bundle line touches them.
+ *
  * Scope note: this first pass covers placement + bundle authoring + bundle
  * waypoints, which is what makes automatic routing work end to end. A
  * formboard background image is a real spec feature left for a later pass.
@@ -78,11 +96,23 @@ import type { HarnessStore, Component, Point } from '@openharness/core';
 import { newInstanceId, computeDerivedModel } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
+import { nextLayoutGrid } from './layoutGrid.js';
+import { useCanvasPan } from './canvasPan.js';
 
 const PX_PER_MM = 4;
-const NODE_W = 76;
-const NODE_H = 32;
 const BRANCH_R = 7;
+
+// Generic connector-plug glyph geometry (px, local space before rotation —
+// see connectorGlyph). Small and generic on purpose (Connor: "small
+// generalized connector shapes"), not per-type accurate artwork.
+const BODY_HALF_LEN = 12;
+const BODY_HALF_W = 8;
+const NOSE_LEN = 6;
+const NOSE_HALF_W = 5;
+const STUB_LEN = 10;
+/** Hover/selection ring + hit-target radius — generous enough to cover the
+ * glyph at any rotation without having to rotate the hit-target itself. */
+const HOVER_R = 24;
 
 type Selection = { kind: 'component'; id: string } | { kind: 'bundle'; id: string } | null;
 
@@ -127,44 +157,62 @@ function distToSegmentSq(p: Point, a: Point, b: Point): number {
   return (p.x - projX) ** 2 + (p.y - projY) ** 2;
 }
 
-/** Point on a node's actual outline where a bundle line to `otherCenter`
- * should visibly terminate (Connor: "the actual routing and connector
- * visuals do[n't] look clean"). Bundle lines used to run from raw node
- * CENTER to raw node CENTER — hidden behind the fill for most of their
- * length, then reappearing wherever that straight line happened to cross
- * the rectangle's boundary, which crossed corners at odd angles for any
- * pair of nodes that weren't roughly on the same row. This clips the line
- * to the real outline instead: a rectangle for ordinary components, a
- * small circle for branch points (rendered as plain topology dots, not
- * boxes — see the placed-node render below), so every bundle visibly
- * plugs into the edge of the part it's leaving/entering. */
-function outlinePoint(node: Component, topLeft: Point, otherCenter: Point): Point {
-  const cx = topLeft.x + NODE_W / 2;
-  const cy = topLeft.y + NODE_H / 2;
-  const dx = otherCenter.x - cx;
-  const dy = otherCenter.y - cy;
-  if (dx === 0 && dy === 0) return { x: cx, y: cy };
-  if (node.type === 'branchPoint') {
-    const len = Math.hypot(dx, dy);
-    return { x: cx + (dx / len) * BRANCH_R, y: cy + (dy / len) * BRANCH_R };
-  }
-  const halfW = NODE_W / 2;
-  const halfH = NODE_H / 2;
-  const tx = dx !== 0 ? halfW / Math.abs(dx) : Infinity;
-  const ty = dy !== 0 ? halfH / Math.abs(dy) : Infinity;
-  const t = Math.min(tx, ty);
-  return { x: cx + dx * t, y: cy + dy * t };
+/** Point on a branch point's little circle where a bundle line to
+ * `otherCenter`/`aimAt` should visibly terminate — branch points are pure
+ * layout topology (spec §4.2), rendered as plain dots, so this is just
+ * circle-edge math (no orientation to account for, unlike connectorGlyph). */
+function branchOutlinePoint(center: Point, aimAt: Point): Point {
+  const dx = aimAt.x - center.x;
+  const dy = aimAt.y - center.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return center;
+  return { x: center.x + (dx / len) * BRANCH_R, y: center.y + (dy / len) * BRANCH_R };
+}
+
+interface ConnectorGlyph {
+  bodyPoly: string;
+  nosePoly: string;
+  /** Where the cable stub line starts (the body's back edge, center). */
+  stubStart: Point;
+  /** Tip of the cable stub — also where a bundle line attaches, and where
+   * the "start a bundle" handle sits, since that's the point wires
+   * physically leave this connector from. */
+  stubEnd: Point;
+}
+
+/** Builds a small generalized connector-plug glyph centered at `center`,
+ * rotated by `angle` (radians; 0 = facing right, i.e. cable exits to the
+ * east). A tapered "nose" marks the mating face, a short stub marks where
+ * the bundle cable leaves the back — see the file header note on
+ * auto-orientation for how `angle` itself is derived. Manual trig (rather
+ * than an SVG `transform="rotate(...)"`) so the label/icon/handles that key
+ * off the same points stay simple to reason about. */
+function connectorGlyph(center: Point, angle: number): ConnectorGlyph {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const abs = (lx: number, ly: number): Point => ({ x: center.x + lx * cos - ly * sin, y: center.y + lx * sin + ly * cos });
+  const hl = BODY_HALF_LEN;
+  const hw = BODY_HALF_W;
+  const bFT = abs(-hl, -hw);
+  const bFB = abs(-hl, hw);
+  const bBT = abs(hl, -hw);
+  const bBB = abs(hl, hw);
+  const nT1 = abs(-hl - NOSE_LEN, -NOSE_HALF_W);
+  const nT2 = abs(-hl - NOSE_LEN, NOSE_HALF_W);
+  const stubStart = abs(hl, 0);
+  const stubEnd = abs(hl + STUB_LEN, 0);
+  return {
+    bodyPoly: [bFT, bBT, bBB, bFB].map((p) => `${p.x},${p.y}`).join(' '),
+    nosePoly: [bFT, nT1, nT2, bFB].map((p) => `${p.x},${p.y}`).join(' '),
+    stubStart,
+    stubEnd,
+  };
 }
 
 function wireTooltip(wireIds: string[], doc: HarnessStore['doc']): string {
   if (wireIds.length === 0) return 'No wires route through this node yet.';
   const names = [...new Set(wireIds)].map((id) => doc.wires[id]?.refdes ?? id).sort();
   return `Wires through this node (${names.length}): ${names.join(', ')}`;
-}
-
-function nextLayoutGrid(store: HarnessStore): Point {
-  const placed = Object.values(store.doc.components).filter((c) => !!c.layoutPosition).length;
-  return { x: 20 + (placed % 5) * 60, y: 20 + Math.floor(placed / 5) * 50 };
 }
 
 interface Props {
@@ -190,6 +238,8 @@ export function LayoutCanvas({
   const [draggingWaypoint, setDraggingWaypoint] = useState<DraggingWaypoint | null>(null);
   const [pendingBundleFrom, setPendingBundleFrom] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { onBackgroundMouseDown } = useCanvasPan(scrollRef);
 
   const doc = store.doc;
   const derived = computeDerivedModel(doc);
@@ -230,6 +280,49 @@ export function LayoutCanvas({
 
   const placed = Object.values(doc.components).filter((c) => !!c.layoutPosition);
   const unplaced = Object.values(doc.components).filter((c) => !c.layoutPosition && c.type !== 'branchPoint');
+
+  // Auto-orientation (see file header): each connector's facing angle is the
+  // average direction, in px space, from its own center to whatever it's
+  // bundled to (aimed at the first/last routing waypoint when one exists, so
+  // a bent bundle still leaves the glyph pointing the right way). Never
+  // stored — recomputed every render, so dragging either end updates both
+  // glyphs' orientation live, and two connectors bundled only to each other
+  // land exactly 180° apart with no manual flip.
+  const nodeAngles = useMemo(() => {
+    const centersPx = new Map<string, Point>();
+    for (const c of placed) if (c.layoutPosition) centersPx.set(c.id, toPx(c.layoutPosition));
+    const angles = new Map<string, number>();
+    for (const c of placed) {
+      if (c.type === 'branchPoint') continue;
+      const center = centersPx.get(c.id);
+      if (!center) continue;
+      let sx = 0, sy = 0, n = 0;
+      for (const b of Object.values(doc.bundles)) {
+        const isSource = b.sourceId === c.id;
+        const otherId = isSource ? b.targetId : b.targetId === c.id ? b.sourceId : null;
+        if (!otherId) continue;
+        const otherCenter = centersPx.get(otherId);
+        if (!otherCenter) continue;
+        const waypointsPx = (b.waypoints ?? []).map(toPx);
+        const aimAt = (isSource ? waypointsPx[0] : waypointsPx[waypointsPx.length - 1]) ?? otherCenter;
+        const dx = aimAt.x - center.x;
+        const dy = aimAt.y - center.y;
+        const len = Math.hypot(dx, dy);
+        if (len > 0) { sx += dx / len; sy += dy / len; n++; }
+      }
+      angles.set(c.id, n > 0 ? Math.atan2(sy, sx) : 0);
+    }
+    return angles;
+  }, [placed, doc.bundles]);
+
+  const nodeGlyphs = useMemo(() => {
+    const glyphs = new Map<string, ConnectorGlyph>();
+    for (const c of placed) {
+      if (c.type === 'branchPoint' || !c.layoutPosition) continue;
+      glyphs.set(c.id, connectorGlyph(toPx(c.layoutPosition), nodeAngles.get(c.id) ?? 0));
+    }
+    return glyphs;
+  }, [placed, nodeAngles]);
 
   const addBranchPoint = useCallback(() => {
     const pos = nextLayoutGrid(store);
@@ -387,8 +480,8 @@ export function LayoutCanvas({
     [store],
   );
 
-  const maxX = Math.max(500, ...placed.map((c) => toPx(c.layoutPosition!).x + NODE_W + 120));
-  const maxY = Math.max(360, ...placed.map((c) => toPx(c.layoutPosition!).y + NODE_H + 80));
+  const maxX = Math.max(500, ...placed.map((c) => toPx(c.layoutPosition!).x + HOVER_R + 140));
+  const maxY = Math.max(360, ...placed.map((c) => toPx(c.layoutPosition!).y + HOVER_R + 100));
 
   const selectedComponent = selected?.kind === 'component' ? doc.components[selected.id] : undefined;
   const selectedBundle = selected?.kind === 'bundle' ? doc.bundles[selected.id] : undefined;
@@ -415,7 +508,11 @@ export function LayoutCanvas({
       </div>
 
       <div style={s.body}>
-        <div style={s.canvasScroll} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+        <div
+          ref={scrollRef} style={s.canvasScroll}
+          onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+          onMouseDown={onBackgroundMouseDown}
+        >
           <div style={{ position: 'relative', width: maxX, height: maxY }}>
             <svg
               ref={svgRef}
@@ -436,15 +533,16 @@ export function LayoutCanvas({
                 const pa = toPx(a.layoutPosition);
                 const pt = toPx(t.layoutPosition);
                 const waypointsPx = (b.waypoints ?? []).map(toPx);
-                // Clip to each node's real outline (see outlinePoint) rather
-                // than raw center-to-center, aiming at the first/last bend
-                // (or the other node's center if there are no bends) so the
-                // line still points the right direction when routed through
-                // waypoints.
-                const aAimAt = waypointsPx[0] ?? { x: pt.x + NODE_W / 2, y: pt.y + NODE_H / 2 };
-                const tAimAt = waypointsPx[waypointsPx.length - 1] ?? { x: pa.x + NODE_W / 2, y: pa.y + NODE_H / 2 };
-                const from = outlinePoint(a, pa, aAimAt);
-                const to = outlinePoint(t, pt, tAimAt);
+                // Ordinary connectors attach at their glyph's cable-stub tip
+                // (the fixed point wires leave from, given the glyph's own
+                // auto-computed orientation); branch points have no facing
+                // and just clip to their little circle, aimed at the
+                // first/last bend (or the other end) so the line still
+                // points the right direction through waypoints.
+                const aAimAt = waypointsPx[0] ?? { x: pt.x, y: pt.y };
+                const tAimAt = waypointsPx[waypointsPx.length - 1] ?? { x: pa.x, y: pa.y };
+                const from = a.type === 'branchPoint' ? branchOutlinePoint(pa, aAimAt) : (nodeGlyphs.get(a.id)?.stubEnd ?? pa);
+                const to = t.type === 'branchPoint' ? branchOutlinePoint(pt, tAimAt) : (nodeGlyphs.get(t.id)?.stubEnd ?? pt);
                 const polyPoints = [from, ...waypointsPx, to];
                 const polyStr = polyPoints.map((p) => `${p.x},${p.y}`).join(' ');
                 const isSelected = selected?.kind === 'bundle' && selected.id === b.id;
@@ -495,13 +593,13 @@ export function LayoutCanvas({
               })}
 
               {placed.map((c) => {
-                const p = toPx(c.layoutPosition!);
+                if (!c.layoutPosition) return null;
+                const center = toPx(c.layoutPosition);
                 const isSelected = selected?.kind === 'component' && selected.id === c.id;
                 const isPendingFrom = pendingBundleFrom === c.id;
                 const isHovered = hoveredComponentId === c.id;
                 const isBranch = c.type === 'branchPoint';
-                const cx = p.x + NODE_W / 2;
-                const cy = p.y + NODE_H / 2;
+                const glyph = isBranch ? undefined : nodeGlyphs.get(c.id);
                 // The little connect-handle used to sit at full opacity on
                 // every node all the time — with more than a few parts
                 // placed that read as a field of stray circles. Dim it
@@ -516,27 +614,19 @@ export function LayoutCanvas({
                     onMouseLeave={() => onHoverComponent?.(null)}
                   >
                     {isHovered && !isSelected && (
-                      isBranch ? (
-                        <circle
-                          cx={cx} cy={cy} r={BRANCH_R + 5}
-                          fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
-                          style={{ pointerEvents: 'none' }}
-                        />
-                      ) : (
-                        <rect
-                          x={p.x - 4} y={p.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={theme.radius.node + 3}
-                          fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
-                          style={{ pointerEvents: 'none' }}
-                        />
-                      )
+                      <circle
+                        cx={center.x} cy={center.y} r={isBranch ? BRANCH_R + 5 : HOVER_R}
+                        fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
+                        style={{ pointerEvents: 'none' }}
+                      />
                     )}
                     {isBranch ? (
                       // Branch points are pure layout topology (spec §4.2),
                       // not a physical part — a plain junction dot reads
-                      // much cleaner than a full component box with an
-                      // icon and label crammed into it.
+                      // much cleaner than a connector glyph with a mating
+                      // face and cable stub.
                       <circle
-                        cx={cx} cy={cy} r={BRANCH_R}
+                        cx={center.x} cy={center.y} r={BRANCH_R}
                         fill={theme.color.textFaint}
                         stroke={isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder}
                         strokeWidth={isSelected || isPendingFrom ? 2.5 : 1.5}
@@ -545,48 +635,75 @@ export function LayoutCanvas({
                       >
                         <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
                       </circle>
-                    ) : (
-                      <rect
-                        x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx={theme.radius.node}
-                        fill={theme.color.nodeFill}
-                        stroke={isPendingFrom ? theme.color.accent : isSelected ? theme.color.accent : theme.color.nodeBorder}
-                        strokeWidth={isSelected || isPendingFrom ? 2 : 1}
-                        onMouseDown={(e) => onNodeMouseDown(c, e)}
-                        style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
-                      >
-                        <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
-                      </rect>
-                    )}
+                    ) : glyph ? (
+                      <>
+                        {/* Fat invisible hit-target, unrotated, so grabbing
+                           the node works the same regardless of which way
+                           its glyph is currently facing. */}
+                        <circle
+                          cx={center.x} cy={center.y} r={HOVER_R} fill="transparent"
+                          onMouseDown={(e) => onNodeMouseDown(c, e)}
+                          style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
+                        >
+                          <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
+                        </circle>
+                        {/* Cable stub — the back of the glyph, auto-facing
+                           whatever it's bundled to (see nodeAngles). */}
+                        <line
+                          x1={glyph.stubStart.x} y1={glyph.stubStart.y} x2={glyph.stubEnd.x} y2={glyph.stubEnd.y}
+                          stroke={theme.color.textFaint} strokeWidth={2.5} strokeLinecap="round"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                        {/* Tapered nose — the mating face, opposite the cable stub. */}
+                        <polygon
+                          points={glyph.nosePoly}
+                          fill={theme.color.nodeFill}
+                          stroke={isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder}
+                          strokeWidth={isSelected || isPendingFrom ? 2 : 1}
+                          style={{ pointerEvents: 'none' }}
+                        />
+                        {/* Body */}
+                        <polygon
+                          points={glyph.bodyPoly}
+                          fill={theme.color.nodeFill}
+                          stroke={isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder}
+                          strokeWidth={isSelected || isPendingFrom ? 2 : 1}
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      </>
+                    ) : null}
                     {!isBranch && (
                       <>
-                        <foreignObject x={p.x + 5} y={p.y + 4} width={13} height={13} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
+                        <foreignObject x={center.x - 6.5} y={center.y - HOVER_R - 16} width={13} height={13} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
                           <ComponentIcon type={c.type} size={11} {...connectorAppearance(c, doc)} />
                         </foreignObject>
-                        <text x={p.x + 21} y={p.y + NODE_H / 2 + 4} fontSize={11.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
+                        <text x={center.x} y={center.y + HOVER_R + 8} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
                           {c.refdes}
                         </text>
                       </>
                     )}
                     {isBranch && (
-                      <text x={cx + BRANCH_R + 6} y={cy + 4} fontSize={10.5} fontWeight={600} fill={theme.color.textMuted} style={{ pointerEvents: 'none' }}>
+                      <text x={center.x + BRANCH_R + 6} y={center.y + 4} fontSize={10.5} fontWeight={600} fill={theme.color.textMuted} style={{ pointerEvents: 'none' }}>
                         {c.refdes}
                       </text>
                     )}
-                    <circle
-                      cx={p.x + NODE_W} cy={p.y + NODE_H / 2} r={4} fill={theme.color.nodeFill} stroke={theme.color.accent} strokeWidth={1.3}
-                      opacity={handleActive ? 1 : 0.4}
-                      style={{ cursor: 'crosshair', transition: 'opacity 100ms ease' }}
-                      onClick={(e) => { e.stopPropagation(); setPendingBundleFrom(pendingBundleFrom === c.id ? null : c.id); }}
-                    >
-                      <title>Click to start a bundle from here.</title>
-                    </circle>
+                    {glyph && (
+                      <circle
+                        cx={glyph.stubEnd.x} cy={glyph.stubEnd.y} r={4} fill={theme.color.nodeFill} stroke={theme.color.accent} strokeWidth={1.3}
+                        opacity={handleActive ? 1 : 0.4}
+                        style={{ cursor: 'crosshair', transition: 'opacity 100ms ease' }}
+                        onClick={(e) => { e.stopPropagation(); setPendingBundleFrom(pendingBundleFrom === c.id ? null : c.id); }}
+                      >
+                        <title>Click to start a bundle from here.</title>
+                      </circle>
+                    )}
                   </g>
                 );
               })}
             </svg>
 
             {selectedComponent && selectedComponent.layoutPosition && (
-              <div style={{ position: 'absolute', left: toPx(selectedComponent.layoutPosition).x, top: toPx(selectedComponent.layoutPosition).y + NODE_H + 8, zIndex: 2 }}>
+              <div style={{ position: 'absolute', left: toPx(selectedComponent.layoutPosition).x - 30, top: toPx(selectedComponent.layoutPosition).y + HOVER_R + 22, zIndex: 2 }}>
                 <div style={s.card}>
                   <div style={s.cardHeader}>
                     <ComponentIcon type={selectedComponent.type} {...connectorAppearance(selectedComponent, doc)} />
@@ -683,7 +800,7 @@ const s = {
   hintMuted: { color: theme.color.textFaint, fontSize: 11.5, marginLeft: 6 },
 
   body: { flex: 1, display: 'flex', minHeight: 0 },
-  canvasScroll: { flex: 1, overflow: 'auto' },
+  canvasScroll: { flex: 1, overflow: 'auto', cursor: 'grab' },
   svg: { display: 'block' },
 
   sidebar: { width: 220, borderLeft: `1px solid ${theme.color.border}`, background: theme.color.surface, padding: 14, overflow: 'auto', flexShrink: 0 },
