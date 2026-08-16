@@ -91,7 +91,7 @@ type Selection =
   | null;
 
 interface Dragging {
-  kind: 'component' | 'note' | 'wire';
+  kind: 'component' | 'note';
   id: string;
   pointerStartX: number;
   pointerStartY: number;
@@ -1006,15 +1006,10 @@ export function SchematicCanvas({
           const c = draft.components[dragging.id];
           if (c) c.schematicPosition = { x, y };
         });
-      } else if (dragging.kind === 'note') {
+      } else {
         store.transact('Move note', (draft) => {
           const n = draft.notes[dragging.id];
           if (n) n.schematicPosition = { x, y };
-        });
-      } else {
-        store.transact('Bend wire', (draft) => {
-          const w = draft.wires[dragging.id];
-          if (w) w.schematicWaypoint = { x, y };
         });
       }
     },
@@ -1022,43 +1017,6 @@ export function SchematicCanvas({
   );
 
   const onMouseUp = useCallback(() => setDragging(null), []);
-
-  // Manual wire routing (spec follow-up: "can't drag wires around manually
-  // to place them as I wish"). Grabbing the wire's own trace starts (or
-  // continues dragging) a single manual bend point — see
-  // Wire.schematicWaypoint and schematicScene.ts for how it overrides the
-  // 45°-diagonal auto-router once set. Starting position is approximated as
-  // the wire's current midpoint since there's no click->schematic-space
-  // coordinate conversion here (same 1:1-pixel-delta convention every other
-  // drag in this file already relies on) — it snaps to the cursor within
-  // the same gesture on the first mousemove, so this reads as "grab and
-  // bend" in practice.
-  const onWireMouseDown = useCallback(
-    (wire: SceneWire, e: React.MouseEvent) => {
-      // Shift is reserved for multi-select (onWireClick's shift branch) —
-      // bail out so this doesn't fight over `selected`/`multiSelect` state.
-      if (e.button !== 0 || e.shiftKey) return;
-      e.stopPropagation();
-      setContextMenu(null);
-      setMultiSelect(new Set());
-      setSelected({ kind: 'wire', id: wire.wireId });
-      setInspectorTab('edit');
-      setInspectorOpen(false);
-      const start = wire.manualWaypoint ?? wire.midpoint;
-      setDragging({ kind: 'wire', id: wire.wireId, pointerStartX: e.clientX, pointerStartY: e.clientY, boxStartX: start.x, boxStartY: start.y });
-    },
-    [],
-  );
-
-  const resetWireRouting = useCallback(
-    (wireId: string) => {
-      store.transact('Reset wire routing', (draft) => {
-        const w = draft.wires[wireId];
-        if (w) w.schematicWaypoint = undefined;
-      });
-    },
-    [store],
-  );
 
   const deleteSelected = useCallback(() => {
     if (!selected) return;
@@ -1252,12 +1210,13 @@ export function SchematicCanvas({
               const isHighlighted = !!highlightedWireIds?.has(w.wireId);
               return (
                 <g key={w.wireId}>
-                  {/* Fat invisible hit-target, easier to click (or grab-and-drag
-                     to bend, see onWireMouseDown) than the thin trace. Also the
-                     source of cross-pane wire hover — see onHoverWire prop. */}
+                  {/* Fat invisible hit-target, easier to click than the thin
+                     trace. Also the source of cross-pane wire hover — see
+                     onHoverWire prop. Wires are always auto-routed in
+                     Schematic now (Connor: "remove routing nodes from
+                     schematic") — no manual-bend drag here. */}
                   <path d={w.path} fill="none" stroke="transparent" strokeWidth={12}
-                    style={{ cursor: w.degraded ? 'pointer' : 'grab' }}
-                    onMouseDown={(e) => !w.degraded && onWireMouseDown(w, e)}
+                    style={{ cursor: 'pointer' }}
                     onClick={(e) => onWireClick(w.wireId, e)} onContextMenu={(e) => onWireContextMenu(w.wireId, e)}
                     onMouseEnter={() => onHoverWire?.(w.wireId)} onMouseLeave={() => onHoverWire?.(null)} />
                   {isHighlighted && (
@@ -1283,25 +1242,8 @@ export function SchematicCanvas({
                       style={{ pointerEvents: 'none' }}
                     />
                   )}
-                  {(isSelected || isMulti) && !w.manualWaypoint && (
+                  {(isSelected || isMulti) && (
                     <circle cx={w.midpoint.x} cy={w.midpoint.y} r={3.5} fill={theme.color.accent} style={{ pointerEvents: 'none' }} />
-                  )}
-                  {/* Manual-bend drag handle (spec follow-up: "drag wires
-                     around manually") — only shown once a wire has been
-                     bent, so untouched auto-routed wires stay uncluttered. */}
-                  {w.manualWaypoint && (
-                    <circle
-                      cx={w.manualWaypoint.x} cy={w.manualWaypoint.y} r={5}
-                      fill={theme.color.surface}
-                      stroke={isSelected || isMulti ? theme.color.accent : theme.color.textFaint}
-                      strokeWidth={2}
-                      style={{ cursor: 'grab' }}
-                      onMouseDown={(e) => onWireMouseDown(w, e)}
-                      onClick={(e) => onWireClick(w.wireId, e)}
-                      onContextMenu={(e) => onWireContextMenu(w.wireId, e)}
-                    >
-                      <title>Drag to move the bend, or right-click the wire → "Reset routing" to go back to auto-routing.</title>
-                    </circle>
                   )}
                 </g>
               );
@@ -1832,7 +1774,6 @@ export function SchematicCanvas({
               onDelete={deleteSelected}
               onUngroupWire={removeWireFromGroup}
               onUngroup={ungroupWires}
-              onResetWireRouting={resetWireRouting}
             />
           )}
         </div>
@@ -2518,7 +2459,7 @@ function GroupInspector({
  * this menu, and its "Edit" item specifically, is the only way to open the
  * full property card. Item set stays small and real per target kind. */
 function ContextMenu({
-  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup, onResetWireRouting,
+  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup,
 }: {
   state: ContextMenuState;
   store: HarnessStore;
@@ -2528,7 +2469,6 @@ function ContextMenu({
   onDelete: () => void;
   onUngroupWire: (groupId: string, wireId: string) => void;
   onUngroup: (groupId: string) => void;
-  onResetWireRouting: (wireId: string) => void;
 }) {
   const items: { label: string; onClick: () => void; danger?: boolean }[] = [];
   items.push({ label: 'Edit', onClick: () => { onEdit(); onClose(); } });
@@ -2552,9 +2492,6 @@ function ContextMenu({
     const wire = store.doc.wires[state.target.id];
     if (wire?.twistGroupId) {
       items.push({ label: 'Remove from group', onClick: () => { onUngroupWire(wire.twistGroupId!, state.target.id); onClose(); } });
-    }
-    if (wire?.schematicWaypoint) {
-      items.push({ label: 'Reset routing', onClick: () => { onResetWireRouting(state.target.id); onClose(); } });
     }
     items.push({ label: 'Delete wire', danger: true, onClick: () => { onDelete(); onClose(); } });
   } else if (state.target.kind === 'group') {
