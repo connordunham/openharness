@@ -58,9 +58,22 @@
  * "start a bundle" handle is now dimmed until it's actually relevant
  * (hovered/selected, or a connect is already in progress) instead of
  * sitting at full opacity on every node all the time.
+ *
+ * Cross-pane wire/bundle hover (Connor: "if I highlight a bundle, I want
+ * all wires that route through that point to be highlighted and all
+ * relevant connectors highlighted"): hovering a bundle's line here reports
+ * `hoveredBundleId` up to App.tsx, which Schematic resolves to a wire set
+ * via `derived.bundleContents` and highlights (plus their connector
+ * endpoints). The relationship runs the other way too — hovering a wire in
+ * Schematic reports `hoveredWireId`, and this pane resolves it to the
+ * bundle(s) that wire's route actually passes through via
+ * `derived.wireRoutes` (not just the wire's two component endpoints, which
+ * would miss any intermediate bundle hops) and highlights those bundle
+ * lines. Same lifted-state pattern as `hoveredComponentId`/`onHoverComponent`
+ * already used for whole-component hover.
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { HarnessStore, Component, Point } from '@openharness/core';
 import { newInstanceId, computeDerivedModel } from '@openharness/core';
 import { theme } from './theme.js';
@@ -158,9 +171,20 @@ interface Props {
   store: HarnessStore;
   hoveredComponentId?: string | null;
   onHoverComponent?: (id: string | null) => void;
+  /** Wire/bundle cross-pane hover — see the Props doc in SchematicCanvas.tsx.
+   * Layout is the pane that draws bundles, so it *originates*
+   * `hoveredBundleId` (via `onHoverBundle`); `hoveredWireId` only ever
+   * arrives from Schematic, and this pane resolves it to the bundle(s) that
+   * wire's route passes through via `derived.wireRoutes` — no `onHoverWire`
+   * here since there's no individual wire geometry to hover in this pane. */
+  hoveredWireId?: string | null;
+  hoveredBundleId?: string | null;
+  onHoverBundle?: (id: string | null) => void;
 }
 
-export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Props) {
+export function LayoutCanvas({
+  store, hoveredComponentId, onHoverComponent, hoveredWireId, hoveredBundleId, onHoverBundle,
+}: Props) {
   const [selected, setSelected] = useState<Selection>(null);
   const [dragging, setDragging] = useState<Dragging | null>(null);
   const [draggingWaypoint, setDraggingWaypoint] = useState<DraggingWaypoint | null>(null);
@@ -192,6 +216,17 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
     },
     [doc.bundles, derived.bundleContents],
   );
+
+  // Cross-pane wire highlight, resolved to bundles: a wire hovered in
+  // Schematic reports its id here; `derived.wireRoutes` (the same table
+  // `computeLengths` uses) gives the exact bundle path that wire actually
+  // routes through, so every bundle it passes through lights up rather than
+  // just its two physical endpoints.
+  const highlightedBundleIds = useMemo(() => {
+    if (!hoveredWireId) return null;
+    const route = derived.wireRoutes.get(hoveredWireId);
+    return route ? new Set(route.segments) : null;
+  }, [hoveredWireId, derived.wireRoutes]);
 
   const placed = Object.values(doc.components).filter((c) => !!c.layoutPosition);
   const unplaced = Object.values(doc.components).filter((c) => !c.layoutPosition && c.type !== 'branchPoint');
@@ -414,19 +449,31 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                 const polyStr = polyPoints.map((p) => `${p.x},${p.y}`).join(' ');
                 const isSelected = selected?.kind === 'bundle' && selected.id === b.id;
                 const wireNames = wireTooltip(derived.bundleContents.get(b.id) ?? [], doc);
+                // Cross-pane highlight: this bundle is directly hovered, or
+                // it's on the route of a wire hovered over in Schematic
+                // (Connor: "highlight all wires that route through that
+                // point" — the same relationship in reverse).
+                const isHighlighted = hoveredBundleId === b.id || !!highlightedBundleIds?.has(b.id);
                 return (
                   <g key={b.id}>
                     {/* Fat invisible hit-target; grabbing anywhere on it (off
-                       an existing routing-node handle) inserts a new bend. */}
+                       an existing routing-node handle) inserts a new bend.
+                       Also the source of cross-pane bundle hover. */}
                     <polyline points={polyStr} fill="none" stroke="transparent" strokeWidth={14}
                       style={{ cursor: 'crosshair' }}
                       onMouseDown={(e) => onBundleMouseDown(b.id, e)}
-                      onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'bundle', id: b.id }); }}>
+                      onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'bundle', id: b.id }); }}
+                      onMouseEnter={() => onHoverBundle?.(b.id)} onMouseLeave={() => onHoverBundle?.(null)}>
                       <title>{`${b.refdes} — ${wireNames}`}</title>
                     </polyline>
+                    {isHighlighted && (
+                      <polyline points={polyStr} fill="none" stroke={theme.color.warning}
+                        strokeOpacity={0.5} strokeWidth={8} strokeLinecap="round"
+                        style={{ pointerEvents: 'none' }} />
+                    )}
                     <polyline points={polyStr} fill="none"
-                      stroke={isSelected ? theme.color.accent : theme.color.textFaint}
-                      strokeWidth={isSelected ? 3 : 2}
+                      stroke={isSelected || isHighlighted ? theme.color.accent : theme.color.textFaint}
+                      strokeWidth={isSelected || isHighlighted ? 3 : 2}
                       strokeDasharray={b.length === undefined ? '5 4' : undefined}
                       style={{ pointerEvents: 'none' }} />
                     {/* Routing-node handles — draggable, right-click to remove. */}

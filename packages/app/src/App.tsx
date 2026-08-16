@@ -90,6 +90,17 @@ export function App() {
   // lights it up in the others too, even on tabs that aren't visible right
   // now (harmless: each pane just checks the id against its own content).
   const [hoveredComponentId, setHoveredComponentId] = useState<string | null>(null);
+  // Wire/bundle cross-pane hover (Connor: "when I hover over wires or
+  // connectors I want that highlighted in the schematic... if I highlight a
+  // bundle, I want all wires that route through that point highlighted and
+  // all relevant connectors highlighted"). Same lifted-state pattern as
+  // hoveredComponentId: `hoveredWireId` originates from Schematic (the only
+  // pane that draws individual wires) and `hoveredBundleId` originates from
+  // Layout (the only pane that draws bundles); each pane also *reads* the
+  // other's id to compute its own highlight set — see the derived-model
+  // lookups (`bundleContents`/`wireRoutes`) in SchematicCanvas/LayoutCanvas.
+  const [hoveredWireId, setHoveredWireId] = useState<string | null>(null);
+  const [hoveredBundleId, setHoveredBundleId] = useState<string | null>(null);
 
   // Dark mode (follow-up request). The actual color values live in
   // index.css as `[data-theme='dark']` overrides of the --oh-* vars that
@@ -209,9 +220,23 @@ export function App() {
     if (!store || !derived) return null;
     switch (view) {
       case 'schematic':
-        return <SchematicCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
+        return (
+          <SchematicCanvas
+            store={store}
+            hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId}
+            hoveredWireId={hoveredWireId} onHoverWire={setHoveredWireId}
+            hoveredBundleId={hoveredBundleId}
+          />
+        );
       case 'layout':
-        return <LayoutCanvas store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
+        return (
+          <LayoutCanvas
+            store={store}
+            hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId}
+            hoveredWireId={hoveredWireId}
+            hoveredBundleId={hoveredBundleId} onHoverBundle={setHoveredBundleId}
+          />
+        );
       case 'bom':
         return <BomPane store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
       case 'overview':

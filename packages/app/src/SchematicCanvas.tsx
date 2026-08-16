@@ -57,6 +57,18 @@ interface Props {
    * optional so this component still works standalone (e.g. in tests). */
   hoveredComponentId?: string | null;
   onHoverComponent?: (id: string | null) => void;
+  /** Wire/bundle cross-pane hover (Connor: "when I hover over wires or
+   * connectors I want that highlighted in the schematic... if I highlight a
+   * bundle, I want all wires that route through that point highlighted and
+   * all relevant connectors highlighted"). Schematic is the pane that draws
+   * individual wires, so it *originates* `hoveredWireId` (via
+   * `onHoverWire`); `hoveredBundleId` only ever arrives from Layout (there's
+   * nothing to click-and-report here — no `onHoverBundle`), and this pane
+   * resolves it to the set of wires+connectors to highlight via
+   * `store.derived.bundleContents`. */
+  hoveredWireId?: string | null;
+  onHoverWire?: (id: string | null) => void;
+  hoveredBundleId?: string | null;
 }
 
 interface PendingWire {
@@ -240,7 +252,9 @@ function ensureWirePart(draft: HarnessDocument, wireId: string): WirePart {
   return draft.parts[w.partId] as WirePart;
 }
 
-export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }: Props) {
+export function SchematicCanvas({
+  store, hoveredComponentId, onHoverComponent, hoveredWireId, onHoverWire, hoveredBundleId,
+}: Props) {
   const [selected, setSelected] = useState<Selection>(null);
   const [multiSelect, setMultiSelect] = useState<Set<string>>(new Set());
   const [pendingWire, setPendingWire] = useState<PendingWire | null>(null);
@@ -281,6 +295,34 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
     }
     return map;
   }, [scene.wires, store.doc.wires]);
+
+  // Cross-pane wire/bundle highlighting (Connor: "if I highlight a bundle, I
+  // want all wires that route through that point to be highlighted and all
+  // relevant connectors highlighted"). A hovered bundle (from Layout)
+  // resolves to every wire whose route passes through it via
+  // `derived.bundleContents` — the same lookup Layout's own "wires through
+  // this node" tooltip already uses, so this can never disagree with it. A
+  // directly-hovered wire (originating right here, or reported back from
+  // Layout highlighting a single wire's route) is just itself. Either way,
+  // the wires' own endpoints (skipping `free` endpoints, which have no
+  // component) give the connector set to highlight.
+  const highlightedWireIds = useMemo(() => {
+    if (hoveredWireId) return new Set([hoveredWireId]);
+    if (hoveredBundleId) return new Set(store.derived.bundleContents.get(hoveredBundleId) ?? []);
+    return null;
+  }, [hoveredWireId, hoveredBundleId, store.derived.bundleContents]);
+
+  const highlightedComponentIds = useMemo(() => {
+    if (!highlightedWireIds) return null;
+    const ids = new Set<string>();
+    for (const wireId of highlightedWireIds) {
+      const w = store.doc.wires[wireId];
+      if (!w) continue;
+      if (w.source.kind !== 'free') ids.add(w.source.componentId);
+      if (w.target.kind !== 'free') ids.add(w.target.componentId);
+    }
+    return ids;
+  }, [highlightedWireIds, store.doc.wires]);
 
   const select = useCallback((sel: Selection) => {
     setSelected(sel);
@@ -856,18 +898,31 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
             {scene.wires.map((w) => {
               const isSelected = selected?.kind === 'wire' && selected.id === w.wireId;
               const isMulti = multiSelect.has(wireKey(w.wireId));
+              // Cross-pane highlight: either this exact wire is hovered
+              // (locally, or reported back from Layout), or it's one of the
+              // wires routed through a bundle hovered in Layout.
+              const isHighlighted = !!highlightedWireIds?.has(w.wireId);
               return (
                 <g key={w.wireId}>
                   {/* Fat invisible hit-target, easier to click (or grab-and-drag
-                     to bend, see onWireMouseDown) than the thin trace. */}
+                     to bend, see onWireMouseDown) than the thin trace. Also the
+                     source of cross-pane wire hover — see onHoverWire prop. */}
                   <path d={w.path} fill="none" stroke="transparent" strokeWidth={12}
                     style={{ cursor: w.degraded ? 'pointer' : 'grab' }}
                     onMouseDown={(e) => !w.degraded && onWireMouseDown(w, e)}
-                    onClick={(e) => onWireClick(w.wireId, e)} onContextMenu={(e) => onWireContextMenu(w.wireId, e)} />
+                    onClick={(e) => onWireClick(w.wireId, e)} onContextMenu={(e) => onWireContextMenu(w.wireId, e)}
+                    onMouseEnter={() => onHoverWire?.(w.wireId)} onMouseLeave={() => onHoverWire?.(null)} />
+                  {isHighlighted && (
+                    <path
+                      d={w.path} fill="none" stroke={theme.color.warning}
+                      strokeOpacity={0.5} strokeWidth={7} strokeLinecap="round"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
                   <path
                     d={w.path} fill="none"
                     stroke={w.degraded ? theme.color.danger : w.color}
-                    strokeWidth={isSelected || isMulti ? 3 : 2}
+                    strokeWidth={isSelected || isMulti || isHighlighted ? 3 : 2}
                     strokeLinecap="round"
                     strokeDasharray={w.degraded ? '4 3' : undefined}
                     style={{ pointerEvents: 'none' }}
@@ -928,7 +983,10 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
 
             {scene.nodes.map((node) => {
               const isSelected = selected?.kind === 'component' && selected.id === node.componentId;
-              const isHovered = hoveredComponentId === node.componentId;
+              // Direct hover (this node itself, from any pane) or an
+              // indirect one — this connector is an endpoint of a wire
+              // highlighted via hoveredWireId/hoveredBundleId (see above).
+              const isHovered = hoveredComponentId === node.componentId || !!highlightedComponentIds?.has(node.componentId);
               return (
                 <g
                   key={node.componentId}
