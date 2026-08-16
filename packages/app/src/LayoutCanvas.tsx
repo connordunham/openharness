@@ -92,12 +92,13 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { HarnessStore, Component, Point } from '@openharness/core';
+import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination } from '@openharness/core';
 import { newInstanceId, computeDerivedModel } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
 import { useCanvasPan } from './canvasPan.js';
+import { SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
 
 const PX_PER_MM = 4;
 const BRANCH_R = 7;
@@ -143,6 +144,37 @@ function toMm(px: Point): Point {
   return { x: px.x / PX_PER_MM, y: px.y / PX_PER_MM };
 }
 
+/** Shielded wire groups whose members touch this component — Connor: "add
+ * details in the layout to specify shield termination details" (previously
+ * a shield's termination was only editable from the Schematic pane's
+ * GroupInspector; now the physical Layout pane surfaces the same field on
+ * the connector where the shield actually terminates). A wire "touches" the
+ * component if either endpoint resolves to this componentId — covers every
+ * Endpoint kind except `free`, which has no componentId at all. */
+function shieldedGroupsAt(store: HarnessStore, componentId: string): WireGroup[] {
+  const touchesComponent = (ep: Endpoint) => ep.kind !== 'free' && ep.componentId === componentId;
+  return Object.values(store.doc.wireGroups).filter((g) => {
+    if (!g.shield) return false;
+    return g.memberWireIds.some((wid) => {
+      const w = store.doc.wires[wid];
+      return !!w && (touchesComponent(w.source) || touchesComponent(w.target));
+    });
+  });
+}
+
+/** Same lazy-init-on-first-edit pattern as SchematicCanvas's own
+ * `updateTermination` (GroupInspector) — kept as a standalone function here
+ * (rather than a closure over one `group`) since a single connector can
+ * touch several different shielded groups at once. */
+function updateShieldTermination(store: HarnessStore, groupId: string, mutate: (t: ShieldTermination) => void) {
+  store.transact('Edit shield termination', (draft) => {
+    const g = draft.wireGroups[groupId];
+    if (!g?.shield) return;
+    if (!g.shield.termination) g.shield.termination = {};
+    mutate(g.shield.termination);
+  });
+}
+
 /** Squared distance from `p` to the segment `a`-`b`, all in the same space
  * (mm here) — used to find which segment of a bundle's path a click landed
  * nearest to, so a new routing node is inserted in the right place rather
@@ -169,6 +201,16 @@ function branchOutlinePoint(center: Point, aimAt: Point): Point {
   return { x: center.x + (dx / len) * BRANCH_R, y: center.y + (dy / len) * BRANCH_R };
 }
 
+/** A small decoration drawn on top of a glyph's body/nose — e.g. a splice's
+ * junction dot, a diode's cathode band, a terminal's ring. Kept generic
+ * (rather than one field per possible decoration) so the render loop can
+ * draw any type's extras with one small map, and every builder below only
+ * needs to describe *what* to draw, in already-rotated absolute coordinates
+ * (each builder has its own `abs()` closure — see connectorGlyph). */
+type GlyphDecoration =
+  | { kind: 'circle'; cx: number; cy: number; r: number; filled: boolean }
+  | { kind: 'line'; x1: number; y1: number; x2: number; y2: number };
+
 interface ConnectorGlyph {
   bodyPoly: string;
   nosePoly: string;
@@ -178,6 +220,16 @@ interface ConnectorGlyph {
    * the "start a bundle" handle sits, since that's the point wires
    * physically leave this connector from. */
   stubEnd: Point;
+  decorations: GlyphDecoration[];
+}
+
+/** Shared rotation helper — every glyph builder below wants the same
+ * "local (x,y) in a frame facing `angle`, expressed in absolute px" math
+ * that connectorGlyph originally had as a private closure. */
+function glyphRotator(center: Point, angle: number): (lx: number, ly: number) => Point {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return (lx: number, ly: number): Point => ({ x: center.x + lx * cos - ly * sin, y: center.y + lx * sin + ly * cos });
 }
 
 /** Builds a small generalized connector-plug glyph centered at `center`,
@@ -188,9 +240,7 @@ interface ConnectorGlyph {
  * than an SVG `transform="rotate(...)"`) so the label/icon/handles that key
  * off the same points stay simple to reason about. */
 function connectorGlyph(center: Point, angle: number): ConnectorGlyph {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const abs = (lx: number, ly: number): Point => ({ x: center.x + lx * cos - ly * sin, y: center.y + lx * sin + ly * cos });
+  const abs = glyphRotator(center, angle);
   const hl = BODY_HALF_LEN;
   const hw = BODY_HALF_W;
   const bFT = abs(-hl, -hw);
@@ -206,7 +256,155 @@ function connectorGlyph(center: Point, angle: number): ConnectorGlyph {
     nosePoly: [bFT, nT1, nT2, bFB].map((p) => `${p.x},${p.y}`).join(' '),
     stubStart,
     stubEnd,
+    decorations: [],
   };
+}
+
+/** Cable glyph: a rounded capsule (approximated with a cut-corner octagon)
+ * — reads as a short run of jacketed cable rather than a plug, and has no
+ * "nose"/mating-face at all (nosePoly empty), since a cable doesn't mate
+ * with anything. */
+function cableGlyph(center: Point, angle: number): ConnectorGlyph {
+  const abs = glyphRotator(center, angle);
+  const hl = 11;
+  const hw = 6.5;
+  const c = 3.5;
+  const pts = [
+    abs(-hl + c, -hw), abs(hl - c, -hw), abs(hl, -hw + c), abs(hl, hw - c),
+    abs(hl - c, hw), abs(-hl + c, hw), abs(-hl, hw - c), abs(-hl, -hw + c),
+  ];
+  const stubStart = abs(hl, 0);
+  const stubEnd = abs(hl + STUB_LEN, 0);
+  return { bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '), nosePoly: '', stubStart, stubEnd, decorations: [] };
+}
+
+/** Splice glyph: a short thin barrel with a junction dot at the true center
+ * — the layout-space equivalent of the schematic splice symbol
+ * (spliceSymbol in SchematicCanvas.tsx). Like every other non-connector
+ * type here, it still only carries one bundle attach point (the data
+ * model's Bundle is a single source->target edge, same simplification the
+ * original connector-only glyph already made). */
+function spliceGlyph(center: Point, angle: number): ConnectorGlyph {
+  const abs = glyphRotator(center, angle);
+  const hl = 8;
+  const hw = 3;
+  const pts = [abs(-hl, -hw), abs(hl, -hw), abs(hl, hw), abs(-hl, hw)];
+  const stubStart = abs(hl, 0);
+  const stubEnd = abs(hl + STUB_LEN, 0);
+  return {
+    bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '),
+    nosePoly: '',
+    stubStart,
+    stubEnd,
+    decorations: [{ kind: 'circle', cx: center.x, cy: center.y, r: 3, filled: true }],
+  };
+}
+
+/** Terminal glyph: a lead into a ring lug — no filled body polygon at all,
+ * just the lead line + ring decorations, matching the schematic terminal
+ * symbol's own lead-into-ring shape. Respects Terminal.flipped the same way
+ * Connector/Cable do (see file header + schematicScene.ts). */
+function terminalGlyph(center: Point, angle: number, flipped: boolean): ConnectorGlyph {
+  const facing = flipped ? angle + Math.PI : angle;
+  const abs = glyphRotator(center, facing);
+  const hl = 7;
+  const ringR = 5.5;
+  const ringCenter = abs(-hl, 0);
+  const leadStart = abs(-hl + ringR, 0);
+  const leadEnd = abs(hl, 0);
+  const stubStart = abs(hl, 0);
+  const stubEnd = abs(hl + STUB_LEN, 0);
+  return {
+    bodyPoly: '',
+    nosePoly: '',
+    stubStart,
+    stubEnd,
+    decorations: [
+      { kind: 'line', x1: leadStart.x, y1: leadStart.y, x2: leadEnd.x, y2: leadEnd.y },
+      { kind: 'circle', cx: ringCenter.x, cy: ringCenter.y, r: ringR, filled: false },
+    ],
+  };
+}
+
+/** Resistor glyph: a plain thin rectangular body (an axial resistor's
+ * cylinder, seen from the side) with two short cross-bands purely for
+ * visual texture — distinguishes it from the diode's single band and from
+ * generic's plain square at a glance. */
+function resistorGlyph(center: Point, angle: number): ConnectorGlyph {
+  const abs = glyphRotator(center, angle);
+  const hl = 10;
+  const hw = 4;
+  const pts = [abs(-hl, -hw), abs(hl, -hw), abs(hl, hw), abs(-hl, hw)];
+  const band = (bx: number): GlyphDecoration => {
+    const a = abs(bx, -hw);
+    const b = abs(bx, hw);
+    return { kind: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  };
+  const stubStart = abs(hl, 0);
+  const stubEnd = abs(hl + STUB_LEN, 0);
+  return {
+    bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '),
+    nosePoly: '',
+    stubStart,
+    stubEnd,
+    decorations: [band(-3), band(3)],
+  };
+}
+
+/** Diode glyph: same cylinder as resistorGlyph, but a single cathode band
+ * near one end — its side (front vs. back of the body) mirrors
+ * TwoTerminal.polarity, so a diode's data already-existing `polarity` field
+ * (previously only visible in the Edit tab's dropdown) now shows up
+ * physically here too, same tie-in as the schematic diodeSymbol. */
+function diodeGlyph(center: Point, angle: number, reverse: boolean): ConnectorGlyph {
+  const abs = glyphRotator(center, angle);
+  const hl = 10;
+  const hw = 4;
+  const pts = [abs(-hl, -hw), abs(hl, -hw), abs(hl, hw), abs(-hl, hw)];
+  const bandX = reverse ? hl - 2.5 : -hl + 2.5;
+  const a = abs(bandX, -hw);
+  const b = abs(bandX, hw);
+  const stubStart = abs(hl, 0);
+  const stubEnd = abs(hl + STUB_LEN, 0);
+  return {
+    bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '),
+    nosePoly: '',
+    stubStart,
+    stubEnd,
+    decorations: [{ kind: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y }],
+  };
+}
+
+/** Generic glyph: a plain small square — the same honest "no more specific
+ * shape known" fallback as the generic ComponentIcon, just at node scale. */
+function genericGlyph(center: Point, angle: number): ConnectorGlyph {
+  const abs = glyphRotator(center, angle);
+  const half = 7;
+  const pts = [abs(-half, -half), abs(half, -half), abs(half, half), abs(-half, half)];
+  const stubStart = abs(half, 0);
+  const stubEnd = abs(half + STUB_LEN, 0);
+  return { bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '), nosePoly: '', stubStart, stubEnd, decorations: [] };
+}
+
+/** Dispatches to the right glyph builder per component type (Connor: "then
+ * they should appear automatically as their realistic approximate shape in
+ * the layout" — the follow-up to Round 1's connector-only glyph work,
+ * extended to every other physical component type). Branch points never
+ * reach here — they're rendered as plain dots in the map below, same as
+ * before. */
+function physicalGlyph(component: Component, center: Point, angle: number): ConnectorGlyph {
+  switch (component.type) {
+    case 'connector': return connectorGlyph(center, angle);
+    case 'cable': return cableGlyph(center, angle);
+    case 'splice': return spliceGlyph(center, angle);
+    case 'terminal': return terminalGlyph(center, angle, component.flipped === true);
+    case 'resistor': return resistorGlyph(center, angle);
+    case 'diode': return diodeGlyph(center, angle, component.polarity === 'reverse');
+    case 'generic':
+    case 'branchPoint':
+    default:
+      return genericGlyph(center, angle);
+  }
 }
 
 function wireTooltip(wireIds: string[], doc: HarnessStore['doc']): string {
@@ -319,7 +517,7 @@ export function LayoutCanvas({
     const glyphs = new Map<string, ConnectorGlyph>();
     for (const c of placed) {
       if (c.type === 'branchPoint' || !c.layoutPosition) continue;
-      glyphs.set(c.id, connectorGlyph(toPx(c.layoutPosition), nodeAngles.get(c.id) ?? 0));
+      glyphs.set(c.id, physicalGlyph(c, toPx(c.layoutPosition), nodeAngles.get(c.id) ?? 0));
     }
     return glyphs;
   }, [placed, nodeAngles]);
@@ -670,6 +868,27 @@ export function LayoutCanvas({
                           strokeWidth={isSelected || isPendingFrom ? 2 : 1}
                           style={{ pointerEvents: 'none' }}
                         />
+                        {/* Type-specific decorations — splice's junction
+                           dot, terminal's ring, resistor/diode's bands (see
+                           physicalGlyph's per-type builders). */}
+                        {glyph.decorations.map((d, i) =>
+                          d.kind === 'circle' ? (
+                            <circle
+                              key={i} cx={d.cx} cy={d.cy} r={d.r}
+                              fill={d.filled ? (isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder) : theme.color.nodeFill}
+                              stroke={isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder}
+                              strokeWidth={isSelected || isPendingFrom ? 2 : 1}
+                              style={{ pointerEvents: 'none' }}
+                            />
+                          ) : (
+                            <line
+                              key={i} x1={d.x1} y1={d.y1} x2={d.x2} y2={d.y2}
+                              stroke={isPendingFrom || isSelected ? theme.color.accent : theme.color.nodeBorder}
+                              strokeWidth={isSelected || isPendingFrom ? 2 : 1.3}
+                              style={{ pointerEvents: 'none' }}
+                            />
+                          ),
+                        )}
                       </>
                     ) : null}
                     {!isBranch && (
@@ -712,6 +931,28 @@ export function LayoutCanvas({
                   <div style={s.cardBody}>
                     <div style={s.kvRow}><span style={s.kvKey}>x (mm)</span><span style={s.kvVal}>{selectedComponent.layoutPosition.x.toFixed(1)}</span></div>
                     <div style={s.kvRow}><span style={s.kvKey}>y (mm)</span><span style={s.kvVal}>{selectedComponent.layoutPosition.y.toFixed(1)}</span></div>
+                    {shieldedGroupsAt(store, selectedComponent.id).map((g) => (
+                      <div key={g.id} style={s.shieldSection}>
+                        <div style={s.sectionLabel}>{g.refdes ? `Shield ${g.refdes} termination` : 'Shield termination'}</div>
+                        <label style={s.fieldLabel}>Style</label>
+                        <select
+                          style={s.input} value={g.shield?.termination?.style ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value as ShieldTermination['style'];
+                            updateShieldTermination(store, g.id, (t) => { t.style = v || undefined; });
+                          }}
+                        >
+                          <option value="">(unspecified)</option>
+                          {SHIELD_TERMINATION_STYLES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        </select>
+                        <label style={s.fieldLabel}>Note</label>
+                        <input
+                          style={s.input} value={g.shield?.termination?.note ?? ''}
+                          placeholder="e.g. terminates at backshell, 360° clamp"
+                          onChange={(e) => { const v = e.target.value; updateShieldTermination(store, g.id, (t) => { t.note = v || undefined; }); }}
+                        />
+                      </div>
+                    ))}
                     <button style={s.dangerBtn} onClick={() => unplaceComponent(selectedComponent.id)}>Remove from layout</button>
                   </div>
                 </div>
@@ -826,5 +1067,7 @@ const s = {
   fieldLabel: { fontSize: 11.5, color: theme.color.textFaint, fontWeight: 500 },
   linkBtn: { border: 'none', background: 'transparent', color: theme.color.accent, cursor: 'pointer', fontSize: 12.5, fontWeight: 500, padding: 0 },
   input: { padding: '6px 8px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, fontSize: 12.5, background: theme.color.surface, color: theme.color.textStrong, boxSizing: 'border-box', width: '100%' },
+  sectionLabel: { fontSize: 12, fontWeight: 600, color: theme.color.textStrong, marginTop: 4, marginBottom: 2 },
+  shieldSection: { display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 8, borderTop: `1px solid ${theme.color.border}` },
   dangerBtn: { marginTop: 6, padding: '6px 10px', border: `1px solid ${theme.color.dangerBorder}`, borderRadius: theme.radius.control, background: theme.color.dangerSoft, color: theme.color.danger, cursor: 'pointer', fontSize: 12 },
 } satisfies Record<string, React.CSSProperties | ((...args: never[]) => React.CSSProperties)>;

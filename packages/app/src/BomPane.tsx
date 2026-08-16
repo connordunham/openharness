@@ -18,11 +18,12 @@
 
 import { useCallback, useState } from 'react';
 import type {
-  HarnessStore, Component, Part, PartId, WireGroup, ConnectorConfiguration, GaugeUnit,
+  HarnessStore, Component, Part, PartId, WireGroup, ConnectorConfiguration, GaugeUnit, MaxRatingUnit,
 } from '@openharness/core';
 import { newPartId, newInstanceId } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon } from './icons.js';
+import { MAX_RATING_UNITS } from './partFields.js';
 
 type PartKind = Part['kind'];
 
@@ -33,8 +34,15 @@ const PART_KIND_LABEL: Record<PartKind, string> = {
   resistor: 'Resistors', diode: 'Diodes', covering: 'Coverings', accessory: 'Accessories', generic: 'Generic',
 };
 
+// Connor: "ensure all relevant features added to the connector objects
+// also appear in the other components" — `generic` components previously
+// had no entry here at all, so a plain "generic" component could never be
+// assigned a part from the Assignments panel below (only from the Parts
+// library section, and only if you already knew to create one). Every
+// other component type maps to the identically-named Part kind.
 const COMPONENT_PART_KIND: Partial<Record<Component['type'], PartKind>> = {
   connector: 'connector', splice: 'splice', terminal: 'terminal', resistor: 'resistor', diode: 'diode', cable: 'cable',
+  generic: 'generic',
 };
 
 const ACCESSORY_SLOTS = [
@@ -62,8 +70,12 @@ function targetPartKind(t: AssignTarget): PartKind {
 interface NewPartFields {
   partNumber: string;
   manufacturer: string;
+  vendorPartNumber: string;
+  url: string;
   description: string;
   price: string;
+  maxRatingValue: string;
+  maxRatingUnit: MaxRatingUnit;
   gender: '' | 'male' | 'female' | 'hermaphroditic';
   color: string;
   hasShell: boolean;
@@ -75,7 +87,8 @@ interface NewPartFields {
 }
 
 const EMPTY_FIELDS: NewPartFields = {
-  partNumber: '', manufacturer: '', description: '', price: '',
+  partNumber: '', manufacturer: '', vendorPartNumber: '', url: '', description: '', price: '',
+  maxRatingValue: '', maxRatingUnit: 'V',
   gender: '', color: '', hasShell: false,
   gaugeValue: '', gaugeUnit: 'mm2',
   accessoryType: 'contact', coveringType: 'heatShrink',
@@ -124,8 +137,11 @@ export function BomPane({ store, hoveredComponentId, onHoverComponent }: BomPane
           id: partId,
           partNumber: fields.partNumber || undefined,
           manufacturer: fields.manufacturer || undefined,
+          vendorPartNumber: fields.vendorPartNumber || undefined,
+          url: fields.url || undefined,
           description: fields.description || undefined,
           price: fields.price ? Number(fields.price) : undefined,
+          maxRating: fields.maxRatingValue ? { value: Number(fields.maxRatingValue), unit: fields.maxRatingUnit } : undefined,
           custom: {},
         };
 
@@ -375,10 +391,22 @@ function NewPartForm({ kind, onCreate, onCancel }: { kind: PartKind; onCreate: (
   return (
     <div style={s.newPartForm}>
       <div style={s.newPartGrid}>
-        <Field label="Part number"><input style={s.input} value={fields.partNumber} onChange={(e) => set('partNumber', e.target.value)} /></Field>
+        <Field label="Manf PN"><input style={s.input} value={fields.partNumber} onChange={(e) => set('partNumber', e.target.value)} /></Field>
         <Field label="Manufacturer"><input style={s.input} value={fields.manufacturer} onChange={(e) => set('manufacturer', e.target.value)} /></Field>
+        <Field label="Vendor PN"><input style={s.input} value={fields.vendorPartNumber} onChange={(e) => set('vendorPartNumber', e.target.value)} /></Field>
+        <Field label="Link"><input style={s.input} placeholder="https://…" value={fields.url} onChange={(e) => set('url', e.target.value)} /></Field>
         <Field label="Description"><input style={s.input} value={fields.description} onChange={(e) => set('description', e.target.value)} /></Field>
-        <Field label="Price"><input style={s.input} type="number" step="0.01" value={fields.price} onChange={(e) => set('price', e.target.value)} /></Field>
+        <Field label={kind === 'wire' ? 'Cost (per unit length)' : 'Cost'}><input style={s.input} type="number" step="0.01" value={fields.price} onChange={(e) => set('price', e.target.value)} /></Field>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <Field label="Max rating">
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input style={{ ...s.input, flex: 1.4 }} type="number" step="any" placeholder="value" value={fields.maxRatingValue} onChange={(e) => set('maxRatingValue', e.target.value)} />
+              <select style={{ ...s.input, flex: 1 }} value={fields.maxRatingUnit} onChange={(e) => set('maxRatingUnit', e.target.value as MaxRatingUnit)}>
+                {MAX_RATING_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
+              </select>
+            </div>
+          </Field>
+        </div>
 
         {kind === 'connector' && (
           <>
@@ -480,10 +508,32 @@ function PartLibraryRow({
       </div>
       {expanded && (
         <div style={s.libraryRowBody}>
-          <Field label="Part number"><input style={s.input} value={part.partNumber ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.partNumber = v || undefined; }); }} /></Field>
+          <Field label="Manf PN"><input style={s.input} value={part.partNumber ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.partNumber = v || undefined; }); }} /></Field>
           <Field label="Manufacturer"><input style={s.input} value={part.manufacturer ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.manufacturer = v || undefined; }); }} /></Field>
+          <Field label="Vendor PN"><input style={s.input} value={part.vendorPartNumber ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.vendorPartNumber = v || undefined; }); }} /></Field>
+          <Field label="Link"><input style={s.input} placeholder="https://…" value={part.url ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.url = v || undefined; }); }} /></Field>
           <Field label="Description"><input style={s.input} value={part.description ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.description = v || undefined; }); }} /></Field>
-          <Field label="Price"><input style={s.input} type="number" step="0.01" value={part.price ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.price = v ? Number(v) : undefined; }); }} /></Field>
+          <Field label={part.kind === 'wire' ? 'Cost (per unit length)' : 'Cost'}><input style={s.input} type="number" step="0.01" value={part.price ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.price = v ? Number(v) : undefined; }); }} /></Field>
+          <Field label="Max rating">
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                style={{ ...s.input, flex: 1.4 }} type="number" step="any" placeholder="value" value={part.maxRating?.value ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  onUpdate((p) => {
+                    if (!v) { p.maxRating = undefined; return; }
+                    p.maxRating = { value: Number(v), unit: p.maxRating?.unit ?? 'V' };
+                  });
+                }}
+              />
+              <select
+                style={{ ...s.input, flex: 1 }} value={part.maxRating?.unit ?? 'V'}
+                onChange={(e) => { const unit = e.target.value as MaxRatingUnit; onUpdate((p) => { p.maxRating = { value: p.maxRating?.value ?? 0, unit }; }); }}
+              >
+                {MAX_RATING_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
+              </select>
+            </div>
+          </Field>
           <button style={s.deleteBtn} onClick={onDelete}>Delete part</button>
         </div>
       )}

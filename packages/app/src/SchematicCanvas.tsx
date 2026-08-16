@@ -44,7 +44,7 @@ import { useEffect, useRef } from 'react';
 import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
   SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
-  ShieldPart, ShieldType, ShieldTermination,
+  ShieldPart, ShieldType, ShieldTermination, Part,
 } from '@openharness/core';
 import { newInstanceId, newPartId } from '@openharness/core';
 import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
@@ -52,6 +52,8 @@ import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
 import { useCanvasPan } from './canvasPan.js';
+import { SHIELD_TYPES, SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
+import { PartCommonFields } from './partFields.js';
 
 interface Props {
   store: HarnessStore;
@@ -113,18 +115,6 @@ const HOUSING_SHAPES: { value: ConnectorHousingShape; label: string }[] = [
   { value: 'inline', label: 'Inline / bullet' },
   { value: 'blockTerminal', label: 'Terminal block' },
 ];
-const SHIELD_TYPES: { value: ShieldType; label: string }[] = [
-  { value: 'braid', label: 'Braid' },
-  { value: 'foil', label: 'Foil' },
-  { value: 'foilBraid', label: 'Foil + braid' },
-  { value: 'served', label: 'Served (spiral)' },
-];
-const SHIELD_TERMINATION_STYLES: { value: NonNullable<ShieldTermination['style']>; label: string }[] = [
-  { value: 'pigtail', label: 'Pigtail' },
-  { value: 'lugTo360', label: 'Lug to 360° backshell' },
-  { value: 'drainWire', label: 'Drain wire' },
-  { value: 'none', label: 'None' },
-];
 const ACCESSORY_SLOTS = [
   { key: 'lockPartId', label: 'Lock', type: 'lock' },
   { key: 'dustCoverPartId', label: 'Dust cover', type: 'dustCover' },
@@ -156,40 +146,208 @@ function parseKey(key: string): { kind: 'wire' | 'group'; id: string } | null {
   return { kind, id: key.slice(i + 1) };
 }
 
-/** Twisted-pair visual (Connor: "show twisted pairs as twisted wires" — a
- * previous tick-mark version read as faint dashes along one representative
- * path, not as an actual twist between the real wires). Walks a member
- * wire's own routed polyline and perturbs it perpendicular to the local
- * direction by `amplitude * sin(2π·s/wavelength + phase)`, where `s` is
- * cumulative arc length — a literal wavy overlay drawn ON TOP of that
- * member's normal straight trace (the real trace/hit-target is untouched).
- * Two members phase-shifted by π cross over each other every half
- * wavelength, which is exactly what a twisted pair actually looks like. */
-function twistWavePath(points: Point[], phase: number, amplitude = 3, wavelength = 18): string {
-  if (points.length < 2) return '';
-  const STEP = 4; // sample every 4px of arc length for a smooth-looking curve
-  const out: Point[] = [];
-  let s = 0; // cumulative arc length up to the start of the current segment
+/** How far a shield termination ellipse sits inset from the connector face
+ * (see `shieldTerminations`) — also the outer bound for `TWIST_ZONE_LEN`
+ * below, so a twist crossover glyph never reaches far enough to collide
+ * with a shield mark on the same wire. */
+const SHIELD_INSET = 26;
+
+/** Length (px, along each wire's own route) of the twisted-pair crossover
+ * glyph at each connector exit — kept comfortably under `SHIELD_INSET` so it
+ * always fits between the connector and a shield mark, per Connor: "as
+ * short as possible so it fits between the shield and the connector". */
+const TWIST_ZONE_LEN = 16;
+
+/** Point at cumulative arc length `targetLen` along a polyline, starting
+ * from `points[0]` — used to find where a twist crossover glyph should
+ * rejoin the wire's real, un-perturbed path. Clamps to the last point if
+ * the wire is shorter than `targetLen` (a very short run between adjacent
+ * components). */
+function pointAtArcLength(points: Point[], targetLen: number): Point {
+  if (points.length === 0) return { x: 0, y: 0 };
+  if (points.length === 1) return points[0]!;
+  let remaining = targetLen;
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i]!;
     const b = points[i + 1]!;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const segLen = Math.hypot(dx, dy);
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
     if (segLen === 0) continue;
-    const ux = dx / segLen;
-    const uy = dy / segLen;
-    const px = -uy; // perpendicular unit vector
-    const py = ux;
-    for (let d = 0; d < segLen; d += STEP) {
-      const wobble = amplitude * Math.sin((2 * Math.PI * (s + d)) / wavelength + phase);
-      out.push({ x: a.x + ux * d + px * wobble, y: a.y + uy * d + py * wobble });
+    if (remaining <= segLen) {
+      const t = remaining / segLen;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
     }
-    s += segLen;
+    remaining -= segLen;
   }
-  out.push(points[points.length - 1]!);
-  if (out.length === 0) return '';
-  return out.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  return points[points.length - 1]!;
+}
+
+/** Twisted-pair visual (Connor: "show twisted pairs as twisted wires...
+ * with the wires crossing over back and forth once right at the connector
+ * exit... as short as possible so it fits between the shield and the
+ * connector"). A previous full-length sinusoidal overlay read as a
+ * continuous twist along the whole run rather than a localized cue at the
+ * termination — this instead draws one short "X" crossover glyph at EACH
+ * end where the group's members leave a connector: adjacent members (by
+ * their actual pin order at that end) swap sides once, over `TWIST_ZONE_LEN`
+ * px, then the glyph ends exactly where the real, straight wire trace
+ * resumes (the underlying trace/hit-target is never touched). Only draws
+ * anything for 2+ members — a lone wire can't twist around itself. */
+function twistCrossoverPaths(members: SceneWire[], end: 'from' | 'to'): string[] {
+  if (members.length < 2) return [];
+  const anchors = members.map((m) => {
+    const pts = end === 'from' ? m.routePoints : [...m.routePoints].reverse();
+    return { pin: pts[0]!, zoneEnd: pointAtArcLength(pts, TWIST_ZONE_LEN) };
+  });
+  // Order by lateral (row) position so adjacent-in-space members cross with
+  // each other, not with whichever member happens to be next in the array.
+  const order = anchors
+    .map((a, i) => ({ i, key: a.pin.y }))
+    .sort((a, b) => a.key - b.key)
+    .map((o) => o.i);
+
+  const paths: string[] = [];
+  for (let k = 0; k < order.length - 1; k++) {
+    const a = anchors[order[k]!]!;
+    const b = anchors[order[k + 1]!]!;
+    // `a` swings over to where `b` straightens out, and vice versa — a
+    // single crossing, each back on its own row by TWIST_ZONE_LEN out.
+    paths.push(`M ${a.pin.x} ${a.pin.y} L ${b.zoneEnd.x} ${b.zoneEnd.y}`);
+    paths.push(`M ${b.pin.x} ${b.pin.y} L ${a.zoneEnd.x} ${a.zoneEnd.y}`);
+  }
+  return paths;
+}
+
+/** Component types drawn as real schematic symbols instead of the generic
+ * labeled box (Connor: "improve the other components. add them as symbols
+ * in the schematic instead of generic blocks"). Each of these already had a
+ * tiny 16x16 decorative icon in `icons.tsx`, but the actual node body was
+ * still just a plain rounded rectangle — this scales that same symbol
+ * language up to be the node itself, the same move Layout's `connectorGlyph`
+ * already made for connectors (see LayoutCanvas.tsx). `connector`/`cable`/
+ * `generic` keep the labeled-box treatment: a connector's cavity list and a
+ * cable's core list both need real row space a symbol can't provide, and
+ * `generic` has no more specific shape to draw. */
+const SYMBOL_NODE_TYPES = new Set<Component['type']>(['splice', 'terminal', 'resistor', 'diode']);
+
+/** Splice symbol: a straight through-wire with a junction dot at the
+ * midpoint — the standard schematic convention for "these wires are
+ * electrically the same node," matching the two-port L/R shape
+ * schematicScene.ts already gives a Splice component. */
+function spliceSymbol(x: number, y: number, w: number, h: number) {
+  const cy = y + h / 2;
+  return { lineD: `M ${x} ${cy} L ${x + w} ${cy}`, dotCx: x + w / 2, dotCy: cy, dotR: Math.min(h * 0.28, 5) };
+}
+
+/** Terminal symbol: a stub lead into a ring — the single-port lug shape
+ * (spec §7.2's "ring terminal"), reused for every TerminalKind since the
+ * kind itself is already surfaced as text via SceneRow.label. Ports sit on
+ * the right unless flipped (see schematicScene.ts's Terminal handling). */
+function terminalSymbol(x: number, y: number, w: number, h: number, flipped: boolean) {
+  const cy = y + h / 2;
+  const ringR = Math.min(h * 0.34, 6.5);
+  const ringCx = flipped ? x + w * 0.28 : x + w * 0.72;
+  const leadFrom = flipped ? x + w : x;
+  const leadTo = flipped ? ringCx + ringR : ringCx - ringR;
+  return { leadD: `M ${leadFrom} ${cy} L ${leadTo} ${cy}`, ringCx, ringCy: cy, ringR };
+}
+
+/** Resistor symbol: the classic zigzag between two stub leads — geometry
+ * lifted directly from the ComponentIcon 'resistor' glyph (icons.tsx) and
+ * rescaled from its fixed 16x16 icon space to the node's actual (x,y,w,h),
+ * so the full-size schematic symbol and the small toolbar/header icon read
+ * as the same shape at different sizes. */
+function resistorSymbol(x: number, y: number, w: number, h: number) {
+  const cy = y + h / 2;
+  const amp = Math.min(h * 0.4375, 8);
+  const zx0 = x + w * 0.219;
+  const zx1 = x + w * 0.781;
+  const fr = [0, 0.167, 0.389, 0.611, 0.833, 1];
+  const pts = fr.map((f, i) => {
+    const px = zx0 + (zx1 - zx0) * f;
+    const py = i === 0 || i === fr.length - 1 ? cy : i % 2 === 1 ? cy - amp : cy + amp;
+    return `${px},${py}`;
+  });
+  return {
+    leftStubD: `M ${x} ${cy} L ${zx0} ${cy}`,
+    zigzagPoints: pts.join(' '),
+    rightStubD: `M ${zx1} ${cy} L ${x + w} ${cy}`,
+  };
+}
+
+/** Diode symbol: triangle + cathode bar, also lifted from the ComponentIcon
+ * 'diode' glyph and rescaled the same way as resistorSymbol. `reverse`
+ * mirrors the whole shape left-right so `TwoTerminal.polarity === 'reverse'`
+ * (already a field on the data model, previously invisible in the
+ * schematic) actually shows up as a flipped diode instead of only being
+ * readable from the Edit tab's dropdown. */
+function diodeSymbol(x: number, y: number, w: number, h: number, reverse: boolean) {
+  const cy = y + h / 2;
+  const amp = Math.min(h * 0.4375, 8);
+  const baseF = reverse ? 0.6875 : 0.3125;
+  const apexF = reverse ? 0.344 : 0.656;
+  const baseX = x + w * baseF;
+  const apexX = x + w * apexF;
+  return {
+    leftStubD: `M ${x} ${cy} L ${Math.min(baseX, apexX)} ${cy}`,
+    trianglePoints: `${baseX},${cy - amp} ${baseX},${cy + amp} ${apexX},${cy}`,
+    barD: `M ${apexX} ${cy - amp} L ${apexX} ${cy + amp}`,
+    rightStubD: `M ${Math.max(baseX, apexX)} ${cy} L ${x + w} ${cy}`,
+  };
+}
+
+/** Renders the actual symbol for one SYMBOL_NODE_TYPES node — a plain
+ * function (not a component) so it can be called directly inside the
+ * scene.nodes.map JSX without an extra component-boundary/key wrapper. */
+function renderNodeSymbol(node: SceneNode, color: string, doc: HarnessDocument) {
+  const { x, y, width: w, height: h } = node;
+  const strokeProps = { stroke: color, strokeWidth: 1.6, style: { pointerEvents: 'none' as const } };
+  switch (node.type) {
+    case 'splice': {
+      const sym = spliceSymbol(x, y, w, h);
+      return (
+        <g>
+          <path d={sym.lineD} fill="none" {...strokeProps} />
+          <circle cx={sym.dotCx} cy={sym.dotCy} r={sym.dotR} fill={color} style={{ pointerEvents: 'none' }} />
+        </g>
+      );
+    }
+    case 'terminal': {
+      const component = doc.components[node.componentId];
+      const flipped = component?.type === 'terminal' && component.flipped === true;
+      const sym = terminalSymbol(x, y, w, h, flipped);
+      return (
+        <g>
+          <path d={sym.leadD} fill="none" {...strokeProps} />
+          <circle cx={sym.ringCx} cy={sym.ringCy} r={sym.ringR} fill="none" {...strokeProps} />
+        </g>
+      );
+    }
+    case 'resistor': {
+      const sym = resistorSymbol(x, y, w, h);
+      return (
+        <g>
+          <path d={sym.leftStubD} fill="none" {...strokeProps} />
+          <polyline points={sym.zigzagPoints} fill="none" strokeLinejoin="round" {...strokeProps} />
+          <path d={sym.rightStubD} fill="none" {...strokeProps} />
+        </g>
+      );
+    }
+    case 'diode': {
+      const component = doc.components[node.componentId];
+      const reverse = component?.type === 'diode' && component.polarity === 'reverse';
+      const sym = diodeSymbol(x, y, w, h, reverse);
+      return (
+        <g>
+          <path d={sym.leftStubD} fill="none" {...strokeProps} />
+          <polygon points={sym.trianglePoints} fill="none" strokeLinejoin="round" {...strokeProps} />
+          <path d={sym.barD} fill="none" {...strokeProps} />
+          <path d={sym.rightStubD} fill="none" {...strokeProps} />
+        </g>
+      );
+    }
+    default:
+      return null;
+  }
 }
 
 /** One shield termination mark — a dashed ellipse encircling the group's
@@ -226,7 +384,7 @@ interface ShieldTerminationMark {
  * is never hidden behind it.) */
 function shieldTerminations(members: SceneWire[]): ShieldTerminationMark[] {
   if (members.length === 0) return [];
-  const INSET = 26;
+  const INSET = SHIELD_INSET;
   const build = (pick: (w: SceneWire) => Point, otherPick: (w: SceneWire) => Point): ShieldTerminationMark => {
     const pts = members.map(pick);
     const others = members.map(otherPick);
@@ -265,6 +423,52 @@ function rowEndpoint(node: SceneNode, row: SceneRow): Endpoint {
   }
 }
 
+/** Component id an Endpoint resolves to, or undefined for a `free` endpoint
+ * (a floating point with no component at all) — used by `autoRouteInLayout`
+ * below to find the two components a freshly-drawn wire actually connects. */
+function endpointComponentId(ep: Endpoint): string | undefined {
+  return ep.kind === 'free' ? undefined : ep.componentId;
+}
+
+/** Same grid formula as `nextLayoutGrid` (layoutGrid.ts), but reading the
+ * in-flight `draft` instead of `store.doc` — needed here because a single
+ * wire can require placing BOTH of its components in the same transact
+ * (`nextLayoutGrid(store)` would read the same stale `store.doc` twice and
+ * hand back the same slot for both). */
+function nextLayoutGridFromDraft(draft: HarnessDocument): Point {
+  const placed = Object.values(draft.components).filter((c) => !!c.layoutPosition).length;
+  return { x: 20 + (placed % 5) * 60, y: 20 + Math.floor(placed / 5) * 50 };
+}
+
+/** Connor: "all routing in schematic should appear automatically in the
+ * layout as well" — the same "automatic" philosophy as auto-placement
+ * (nextLayoutGrid) and auto-orientation (LayoutCanvas's nodeAngles),
+ * extended from "the component exists in Layout" to "the physical route
+ * between two connected components exists in Layout too." Called right
+ * after a wire is drawn between two components in Schematic: makes sure
+ * both ends are placed (defensive — they're normally already placed by the
+ * "Add X" actions' own auto-placement, but an imported or programmatically
+ * created component might not be), then makes sure a Bundle directly
+ * connects them, unless one already does (in either direction). Doesn't
+ * touch branch points — those are pure layout topology the user places and
+ * wires up deliberately (spec §4.2), not something to auto-route through. */
+function autoRouteInLayout(draft: HarnessDocument, componentIdA: string, componentIdB: string): void {
+  if (componentIdA === componentIdB) return;
+  const a = draft.components[componentIdA];
+  const b = draft.components[componentIdB];
+  if (!a || !b || a.type === 'branchPoint' || b.type === 'branchPoint') return;
+  if (!a.layoutPosition) a.layoutPosition = nextLayoutGridFromDraft(draft);
+  if (!b.layoutPosition) b.layoutPosition = nextLayoutGridFromDraft(draft);
+  const alreadyRouted = Object.values(draft.bundles).some(
+    (bd) => (bd.sourceId === componentIdA && bd.targetId === componentIdB) || (bd.sourceId === componentIdB && bd.targetId === componentIdA),
+  );
+  if (!alreadyRouted) {
+    const id = newInstanceId();
+    const n = Object.keys(draft.bundles).length;
+    draft.bundles[id] = { id, refdes: `BND${n + 1}`, sourceId: componentIdA, targetId: componentIdB, custom: {} };
+  }
+}
+
 function nextRefdes(store: HarnessStore, prefix: string, type: Component['type']): string {
   const count = Object.values(store.doc.components).filter((c) => c.type === type).length;
   return `${prefix}${count + 1}`;
@@ -277,6 +481,18 @@ function nextGridPosition(store: HarnessStore): Point {
     Object.values(store.doc.components).filter((c) => !!c.schematicPosition).length +
     Object.keys(store.doc.notes).length;
   return { x: 60 + (placed % 4) * 230, y: 70 + Math.floor(placed / 4) * 180 };
+}
+
+/** A component's own part number, or '' if it has none yet — used by the
+ * inline part-number label/editor on the default node view (Connor: "modify
+ * the part number in the schematic default view without having to click
+ * into the properties" — since generalized to every component type, not
+ * just connectors, per Connor's later "ensure all relevant features added
+ * to the connector objects also appear in the other components"). */
+function componentPartNumber(store: HarnessStore, componentId: string): string {
+  const c = store.doc.components[componentId];
+  const partId = c && 'partId' in c ? c.partId : undefined;
+  return partId ? store.doc.parts[partId]?.partNumber ?? '' : '';
 }
 
 /** Default refdes for a newly-shielded WireGroup ("SH1", "SH2"...), same
@@ -310,6 +526,35 @@ function ensureConnectorPart(draft: HarnessDocument, componentId: string): Conne
   return draft.parts[c.partId] as ConnectorPart;
 }
 
+/** Same lazy-create pattern as ensureConnectorPart, generalized to every
+ * other purchasable component type (Connor: "ensure all relevant features
+ * added to the connector objects also appear in the other components" —
+ * the Properties tab's part fields are the clearest case: every component
+ * type should be able to carry a part number/cost/etc., not just
+ * connectors). Connector keeps its own dedicated `ensureConnectorPart`
+ * (it needs extra defaults — numberOfCavities, designationTemplate,
+ * configurations — that don't apply to any other kind), so this only
+ * handles the remaining purchasable types. */
+function ensureComponentPart(draft: HarnessDocument, componentId: string): Part {
+  const c = draft.components[componentId];
+  if (!c) throw new Error('no such component');
+  if (c.type === 'connector') return ensureConnectorPart(draft, componentId);
+  if (c.type === 'branchPoint') throw new Error('branch points have no part');
+  if (!c.partId) {
+    const partId = newPartId();
+    const part: Part =
+      c.type === 'splice' ? { id: partId, kind: 'splice', custom: {} }
+      : c.type === 'terminal' ? { id: partId, kind: 'terminal', custom: {} }
+      : c.type === 'resistor' ? { id: partId, kind: 'resistor', custom: {} }
+      : c.type === 'diode' ? { id: partId, kind: 'diode', custom: {} }
+      : c.type === 'cable' ? { id: partId, kind: 'cable', custom: {} }
+      : { id: partId, kind: 'generic', custom: {} };
+    draft.parts[partId] = part;
+    c.partId = partId;
+  }
+  return draft.parts[c.partId]!;
+}
+
 /** Same lazy-create pattern as ensureConnectorPart, for a wire's own
  * WirePart (spec §4.5 shape) — the part-number field on the wire-properties
  * popup. */
@@ -338,6 +583,13 @@ export function SchematicCanvas({
   const [dragging, setDragging] = useState<Dragging | null>(null);
   const [inspectorTab, setInspectorTab] = useState<'edit' | 'properties'>('edit');
   const [editingCavity, setEditingCavity] = useState<{ componentId: string; cavityId: string } | null>(null);
+  // Connor: "I want the ability to flip the connector orientation and
+  // modify the part number in the schematic default view without having
+  // to click into the properties" — same single-click-to-edit convention
+  // as `editingCavity` above, just for the connector's own part number
+  // instead of a cavity's signal name. Flip itself needs no state at all
+  // (it's a one-click toggle, not an editable field).
+  const [editingPartNumber, setEditingPartNumber] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   // Connor's follow-up: "I don't like the drop down menus that appear upon
   // a click... almost no drop down menu needed unless the user right
@@ -546,6 +798,11 @@ export function SchematicCanvas({
           id, refdes: `W${n + 1}`, color,
           source: pendingWire.endpoint, target: endpoint, custom: {},
         };
+        // Connor: "all routing in schematic should appear automatically in
+        // the layout as well" — see autoRouteInLayout's doc comment.
+        const srcComponentId = endpointComponentId(pendingWire.endpoint);
+        const tgtComponentId = endpointComponentId(endpoint);
+        if (srcComponentId && tgtComponentId) autoRouteInLayout(draft, srcComponentId, tgtComponentId);
       });
       setPendingWire(null);
     },
@@ -984,20 +1241,19 @@ export function SchematicCanvas({
                     </title>
                   </path>
                   {/* Twisted-pair visual (Connor: "show twisted pairs as
-                     twisted wires") — each member's own trace gets a thin
-                     sinusoidal overlay, phase-shifted a half-cycle apart
-                     between members, so they visibly cross over each other
-                     at regular intervals like a real twisted pair, instead
-                     of the old perpendicular tick marks (which read as
-                     faint dashes along a single representative path rather
-                     than an actual twist between the real wires). */}
-                  {isTwist && members.map((m, i) => (
+                     twisted wires... crossing over back and forth once
+                     right at the connector exit... as short as possible so
+                     it fits between the shield and the connector") — a
+                     short "X" crossover glyph at EACH end where the members
+                     leave a connector, not a continuous twist down the
+                     whole run (see twistCrossoverPaths). */}
+                  {isTwist && [...twistCrossoverPaths(members, 'from'), ...twistCrossoverPaths(members, 'to')].map((d, i) => (
                     <path
-                      key={m.wireId}
-                      d={twistWavePath(m.routePoints, i * Math.PI)}
+                      key={i}
+                      d={d}
                       fill="none"
                       stroke={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
-                      strokeOpacity={0.85} strokeWidth={1.2}
+                      strokeOpacity={0.85} strokeWidth={1.2} strokeLinecap="round"
                       style={{ pointerEvents: 'none' }}
                     />
                   ))}
@@ -1110,28 +1366,140 @@ export function SchematicCanvas({
                       style={{ pointerEvents: 'none' }}
                     />
                   )}
-                  <rect
-                    x={node.x} y={node.y} width={node.width} height={node.height} rx={theme.radius.node}
-                    fill={theme.color.nodeFill}
-                    stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
-                    strokeWidth={isSelected ? 2 : 1}
-                    onMouseDown={(e) => onNodeMouseDown(node, e)}
-                    onContextMenu={(e) => onNodeContextMenu(node, e)}
-                    style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
-                  />
-                  {node.rows.length > 0 && (
-                    <line
-                      x1={node.x} y1={node.y + HEADER_HEIGHT} x2={node.x + node.width} y2={node.y + HEADER_HEIGHT}
-                      stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
-                      strokeWidth={1} style={{ pointerEvents: 'none' }}
-                    />
+                  {SYMBOL_NODE_TYPES.has(node.type) ? (
+                    <>
+                      {/* Real schematic symbol instead of a labeled box
+                         (Connor: "add them as symbols in the schematic
+                         instead of generic blocks") — the rect below is
+                         purely an invisible drag/select/right-click hit
+                         target the same size as the old box, not a visible
+                         border, except for a light dashed outline while
+                         selected so there's still a clear selection
+                         indicator without reintroducing "generic block". */}
+                      <rect
+                        x={node.x} y={node.y} width={node.width} height={node.height}
+                        fill="transparent"
+                        stroke={isSelected ? theme.color.accent : 'transparent'}
+                        strokeWidth={1.4}
+                        strokeDasharray={isSelected ? '3 3' : undefined}
+                        onMouseDown={(e) => onNodeMouseDown(node, e)}
+                        onContextMenu={(e) => onNodeContextMenu(node, e)}
+                        style={{ cursor: 'grab' }}
+                      />
+                      {renderNodeSymbol(node, isSelected ? theme.color.accent : theme.color.textStrong, store.doc)}
+                      <text
+                        x={node.x + node.width / 2} y={node.y - 6} textAnchor="middle"
+                        fontSize={11} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}
+                      >
+                        {node.refdes}
+                      </text>
+                    </>
+                  ) : (
+                    <>
+                      <rect
+                        x={node.x} y={node.y} width={node.width} height={node.height} rx={theme.radius.node}
+                        fill={theme.color.nodeFill}
+                        stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
+                        strokeWidth={isSelected ? 2 : 1}
+                        onMouseDown={(e) => onNodeMouseDown(node, e)}
+                        onContextMenu={(e) => onNodeContextMenu(node, e)}
+                        style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
+                      />
+                      {node.rows.length > 0 && (
+                        <line
+                          x1={node.x} y1={node.y + HEADER_HEIGHT} x2={node.x + node.width} y2={node.y + HEADER_HEIGHT}
+                          stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
+                          strokeWidth={1} style={{ pointerEvents: 'none' }}
+                        />
+                      )}
+                      <foreignObject x={node.x + 6} y={node.y + 3} width={16} height={16} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
+                        <ComponentIcon type={node.type} size={13} {...connectorAppearance(store.doc.components[node.componentId], store.doc)} />
+                      </foreignObject>
+                      <text x={node.x + 24} y={node.y + HEADER_HEIGHT - 7} fontSize={12} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
+                        {node.refdes}
+                      </text>
+                    </>
                   )}
-                  <foreignObject x={node.x + 6} y={node.y + 3} width={16} height={16} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
-                    <ComponentIcon type={node.type} size={13} {...connectorAppearance(store.doc.components[node.componentId], store.doc)} />
-                  </foreignObject>
-                  <text x={node.x + 24} y={node.y + HEADER_HEIGHT - 7} fontSize={12} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
-                    {node.refdes}
-                  </text>
+                  {/* Connor: "I want the ability too flip the connector orientation and
+                     modify the part number in the schematic default view without have to
+                     click into the properites" — both live right on the node now, no
+                     inspector needed. ComponentInspector keeps its own flip button too
+                     (same mutation, just a slower path via right-click -> Edit).
+                     Extended to every type with a single directional port (Connor's
+                     follow-up: "ensure all relevant features added to the connector
+                     objects also appear in the other components") — terminal has
+                     exactly that shape (see Terminal.flipped in core/types.ts); splice/
+                     resistor/diode are inherently two-sided (L+R at once) so flipping
+                     has nothing to mean for them. */}
+                  {(node.type === 'connector' || node.type === 'cable' || node.type === 'terminal') && (
+                    <g
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        store.transact('Flip component', (draft) => {
+                          const c = draft.components[node.componentId];
+                          if (c && (c.type === 'connector' || c.type === 'cable' || c.type === 'terminal')) c.flipped = !c.flipped;
+                        });
+                      }}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <circle
+                        cx={node.x + node.width - 10} cy={node.y - 10} r={8}
+                        fill={theme.color.nodeFill} stroke={theme.color.nodeBorder} strokeWidth={1}
+                        opacity={isHovered || isSelected ? 1 : 0.35}
+                        style={{ transition: 'opacity 120ms ease' }}
+                      />
+                      <text
+                        x={node.x + node.width - 10} y={node.y - 6.5} fontSize={10} textAnchor="middle"
+                        fill={theme.color.textMuted} opacity={isHovered || isSelected ? 1 : 0.35}
+                        style={{ pointerEvents: 'none', transition: 'opacity 120ms ease' }}
+                      >
+                        ⇄
+                      </text>
+                      <title>Flip which side wires exit</title>
+                    </g>
+                  )}
+                  {/* Inline part-number editing — likewise extended to every
+                     purchasable type via the generic `ensureComponentPart`
+                     (connector still resolves through its own
+                     `ensureConnectorPart` inside that helper). Symbol-drawn
+                     types (see SYMBOL_NODE_TYPES) have no header band to sit
+                     in, so their label/editor sits just under the box
+                     instead of in the top-right corner. */}
+                  {node.type !== 'branchPoint' && (() => {
+                    const isSymbol = SYMBOL_NODE_TYPES.has(node.type);
+                    const labelX = isSymbol ? node.x + node.width / 2 : node.x + node.width - 20;
+                    const labelY = isSymbol ? node.y + node.height + 12 : node.y + HEADER_HEIGHT - 7;
+                    const anchor = isSymbol ? 'middle' : 'end';
+                    return editingPartNumber === node.componentId ? (
+                      <foreignObject
+                        x={isSymbol ? node.x : node.x + 24}
+                        y={isSymbol ? node.y + node.height + 3 : node.y + HEADER_HEIGHT - 19}
+                        width={isSymbol ? node.width : node.width - 30}
+                        height={16}
+                      >
+                        <InlineSignalInput
+                          initialValue={componentPartNumber(store, node.componentId)}
+                          onCommit={(value) => {
+                            store.transact('Edit part number', (draft) => {
+                              const p = ensureComponentPart(draft, node.componentId);
+                              p.partNumber = value || undefined;
+                            });
+                            setEditingPartNumber(null);
+                          }}
+                          onCancel={() => setEditingPartNumber(null)}
+                        />
+                      </foreignObject>
+                    ) : (
+                      <text
+                        x={labelX} y={labelY}
+                        fontSize={10} textAnchor={anchor} fill={theme.color.textFaint}
+                        style={{ cursor: 'text' }}
+                        onClick={(e) => { e.stopPropagation(); setEditingPartNumber(node.componentId); }}
+                      >
+                        {componentPartNumber(store, node.componentId) || '(part #)'}
+                      </text>
+                    );
+                  })()}
                   {node.rows.map((row, i) => {
                     const isConnector = node.type === 'connector';
                     const isEditing = isConnector && editingCavity?.componentId === node.componentId && editingCavity.cavityId === row.rowId;
@@ -1532,7 +1900,13 @@ function ComponentInspector({
         <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
       </div>
 
-      {component.type === 'connector' && (
+      {/* Connor: "ensure all relevant features added to the connector
+         objects also appear in the other components" — the Properties tab
+         (part number/cost/etc., previously connector-only) now shows for
+         every purchasable type. Branch points aren't purchasable (no
+         schematic presence at all — see schematicScene.ts) so they keep
+         just the single Edit surface. */}
+      {component.type !== 'branchPoint' && (
         <div style={s.tabRow}>
           <button style={s.tabBtn(tab === 'edit')} onClick={() => onTabChange('edit')}>Edit</button>
           <button style={s.tabBtn(tab === 'properties')} onClick={() => onTabChange('properties')}>Properties</button>
@@ -1540,8 +1914,10 @@ function ComponentInspector({
       )}
 
       <div style={s.cardBody}>
-        {component.type === 'connector' && tab === 'properties' ? (
+        {tab === 'properties' && component.type === 'connector' ? (
           <ConnectorProperties store={store} component={component} />
+        ) : tab === 'properties' && component.type !== 'branchPoint' ? (
+          <ComponentProperties store={store} component={component} />
         ) : (
           <ComponentEditFields store={store} component={component} />
         )}
@@ -1549,6 +1925,27 @@ function ComponentInspector({
       </div>
     </div>
   );
+}
+
+/** The Properties tab for every purchasable component type that isn't a
+ * connector (which has its own richer `ConnectorProperties` — gender,
+ * housing shape, configurations, etc.). Just the shared part fields for
+ * now; type-specific catalog attributes (spliceKind, terminalKind,
+ * polarity) stay on the Edit tab where they already lived, since those are
+ * per-instance physical-variant choices rather than catalog/purchasing
+ * data. */
+function ComponentProperties({ store, component }: { store: HarnessStore; component: Component }) {
+  const part = component.partId ? store.doc.parts[component.partId] : undefined;
+  const updatePart = useCallback(
+    (mutate: (p: Part) => void) => {
+      store.transact('Edit part', (draft) => {
+        const p = ensureComponentPart(draft, component.id);
+        mutate(p);
+      });
+    },
+    [store, component.id],
+  );
+  return <PartCommonFields part={part} onUpdate={updatePart} />;
 }
 
 function ComponentEditFields({ store, component }: { store: HarnessStore; component: Component }) {
@@ -1713,10 +2110,10 @@ function WireInspector({
       if (w) w.gauge = { value, unit: draft.settings.gaugeUnit };
     });
   };
-  const setPartNumber = (partNumber: string) => {
-    store.transact('Edit wire part number', (draft) => {
+  const updateWirePart = (mutate: (p: Part) => void) => {
+    store.transact('Edit wire part', (draft) => {
       const p = ensureWirePart(draft, wire.wireId);
-      p.partNumber = partNumber || undefined;
+      mutate(p);
     });
   };
 
@@ -1774,11 +2171,7 @@ function WireInspector({
             setGauge(Number(value));
           }}
         />
-        <label style={s.fieldLabel}>Part number</label>
-        <input
-          style={s.input} placeholder="Wire part number" value={wirePart?.partNumber ?? ''}
-          onChange={(e) => setPartNumber(e.target.value)}
-        />
+        <PartCommonFields part={wirePart} onUpdate={updateWirePart} costLabel="Cost (per unit length)" />
 
         {onUngroupWire && (
           <button style={s.addRowBtn} onClick={onUngroupWire}>Remove from group</button>
@@ -1872,12 +2265,12 @@ function GroupInspector({
     });
   };
 
-  const updateCablePart = (mutate: (p: { partNumber?: string; manufacturer?: string }) => void) => {
+  const updateCablePart = (mutate: (p: Part) => void) => {
     store.transact('Edit cable part', (draft) => {
       const g = draft.wireGroups[group.id];
       if (!g?.partId) return;
       const p = draft.parts[g.partId];
-      if (p) mutate(p as { partNumber?: string; manufacturer?: string });
+      if (p) mutate(p);
     });
   };
 
@@ -1907,16 +2300,7 @@ function GroupInspector({
 
         {group.kind === 'cable' && (
           <>
-            <label style={s.fieldLabel}>Part number</label>
-            <input
-              style={s.input} value={cablePart?.partNumber ?? ''}
-              onChange={(e) => { const v = e.target.value; updateCablePart((p) => { p.partNumber = v || undefined; }); }}
-            />
-            <label style={s.fieldLabel}>Manufacturer</label>
-            <input
-              style={s.input} value={cablePart?.manufacturer ?? ''}
-              onChange={(e) => { const v = e.target.value; updateCablePart((p) => { p.manufacturer = v || undefined; }); }}
-            />
+            <PartCommonFields part={cablePart} onUpdate={updateCablePart} />
             <label style={s.fieldLabel}>Jacket color</label>
             <div style={s.swatchRow}>
               {WIRE_COLORS.map((c) => (
@@ -1944,17 +2328,7 @@ function GroupInspector({
             >
               {SHIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
-            <label style={s.fieldLabel}>Part number</label>
-            <input
-              style={s.input} value={shieldPart.partNumber ?? ''}
-              placeholder="pulled from an existing shield part, or type your own"
-              onChange={(e) => { const v = e.target.value; updateShieldPart((p) => { p.partNumber = v || undefined; }); }}
-            />
-            <label style={s.fieldLabel}>Manufacturer</label>
-            <input
-              style={s.input} value={shieldPart.manufacturer ?? ''}
-              onChange={(e) => { const v = e.target.value; updateShieldPart((p) => { p.manufacturer = v || undefined; }); }}
-            />
+            <PartCommonFields part={shieldPart} onUpdate={(mutate) => updateShieldPart(mutate)} />
             {(shieldPart.shieldType === 'braid' || shieldPart.shieldType === 'foilBraid') && (
               <>
                 <label style={s.fieldLabel}>Coverage (%)</label>
@@ -2107,17 +2481,8 @@ function ConnectorProperties({ store, component }: { store: HarnessStore; compon
 
   return (
     <>
-      <label style={s.fieldLabel}>Part number</label>
-      <input
-        style={s.input} value={part?.partNumber ?? ''}
-        onChange={(e) => { const v = e.target.value; updatePart((p) => { p.partNumber = v || undefined; }); }}
-      />
-      <label style={s.fieldLabel}>Manufacturer</label>
-      <input
-        style={s.input} value={part?.manufacturer ?? ''}
-        onChange={(e) => { const v = e.target.value; updatePart((p) => { p.manufacturer = v || undefined; }); }}
-      />
-      <div style={{ display: 'flex', gap: 8 }}>
+      <PartCommonFields part={part} onUpdate={(mutate) => updatePart(mutate)} />
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         <div style={{ flex: 1 }}>
           <label style={s.fieldLabel}>Gender</label>
           <select

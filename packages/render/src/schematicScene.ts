@@ -186,11 +186,19 @@ function buildNode(component: Component): SceneNode | null {
       };
     }
     case 'terminal': {
+      // Same flip affordance as Connector/Cable (Connor: "ensure all
+      // relevant features added to the connector objects also appear in
+      // the other components") — a terminal has exactly one directional
+      // port, same shape of problem.
+      const flipped = component.flipped === true;
+      const width = BOX_WIDTH * 0.6;
       const height = HEADER_HEIGHT + ROW_HEIGHT;
+      const dir: ExitDir = flipped ? 'left' : 'right';
+      const exitX = flipped ? pos.x : pos.x + width;
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
-        x: pos.x, y: pos.y, width: BOX_WIDTH * 0.6, height,
-        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: pos.x + BOX_WIDTH * 0.6, y: pos.y + height / 2 }, dir: 'right' }],
+        x: pos.x, y: pos.y, width, height,
+        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: exitX, y: pos.y + height / 2 }, dir }],
       };
     }
     case 'resistor':

@@ -150,6 +150,12 @@ export type TerminalKind =
 export interface Terminal extends ComponentBase {
   type: 'terminal';
   terminalKind: TerminalKind;
+  /** Which side the wire exits — same affordance as Connector.flipped
+   * (Connor's follow-up: "ensure all relevant features added to the
+   * connector objects also appear in the other components"). A terminal has
+   * exactly one directional port, same shape of problem as a connector or
+   * cable, so the same flip toggle applies directly. [inferred] */
+  flipped?: boolean;
 }
 
 /** Layout-only: confirmed structurally (never has schematicPosition) in the kitchen-sink export. */
@@ -355,14 +361,30 @@ export type LengthStatus =
 // Parts (spec §4.5)
 // ---------------------------------------------------------------------------
 
+/** [inferred] — Connor's follow-up: "add ... max rating (with selectable
+ * units depending on what the max value is for that part)". Rather than a
+ * fixed field per rating type (voltage/current/power/...), one generic
+ * value+unit pair covers every part kind — a wire picks V or A, a covering
+ * picks degC, a resistor picks W, etc. — without the type model needing a
+ * dedicated field for every possible rating a real catalog part might list. */
+export type MaxRatingUnit = 'V' | 'A' | 'W' | 'ohm' | 'degC' | 'degF';
+
 export interface PartBase {
   id: PartId;
   kind: string;
   partNumber?: string;
   manufacturer?: string;
+  /** [inferred] — Connor's follow-up: "manf PN, vendor PN". `partNumber`
+   * above is the manufacturer's own part number; this is the distributor/
+   * vendor's catalog number for the same part, which is very often
+   * different (e.g. a Digi-Key or Mouser SKU vs. the TE Connectivity part
+   * number itself). */
+  vendorPartNumber?: string;
   description?: string;
   url?: string;
   price?: number;
+  /** [inferred] — see MaxRatingUnit doc comment. */
+  maxRating?: { value: number; unit: MaxRatingUnit };
   source?: { provider: string; ref: string; fetchedAt: string };
   custom: Record<string, unknown>;
 }
@@ -498,11 +520,16 @@ export interface BomLine {
   partId?: PartId;
   partNumber: string;
   manufacturer: string;
+  /** Distributor/vendor catalog number — see PartBase.vendorPartNumber. */
+  vendorPartNumber?: string;
   description: string;
   quantity: number;
   unit: 'ea' | 'mm' | 'cm' | 'm' | 'in' | 'ft';
   unitPrice?: number;
   extendedPrice?: number;
+  /** Datasheet/vendor page — see PartBase.url. */
+  url?: string;
+  maxRating?: { value: number; unit: MaxRatingUnit };
   refdes: string[];
   warnings: string[];
 }
