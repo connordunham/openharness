@@ -12,7 +12,7 @@
  */
 
 import type { HarnessDocument, Component, Endpoint, Point } from '@openharness/core';
-import { computeRoutedPath, pathMidpoint, type ExitDir } from './routing.js';
+import { computeRoutedPath, pathMidpoint, pointsToPathD, type ExitDir } from './routing.js';
 
 export const ROW_HEIGHT = 22;
 export const HEADER_HEIGHT = 24;
@@ -55,6 +55,9 @@ export interface SceneWire {
   path: string;
   /** Midpoint along the route — anchors the wire-properties popup on its trace. */
   midpoint: Point;
+  /** Present when the wire has a manual routing override (Wire.schematicWaypoint)
+   * — the app renders a draggable handle here so the bend can be moved. */
+  manualWaypoint?: Point;
 }
 
 export interface SceneNote {
@@ -91,7 +94,12 @@ export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
     // than running the elbow router on a meaningless anchor.
     const routed = degraded
       ? { points: [fromPoint, toPoint], d: `M ${fromPoint.x} ${fromPoint.y} L ${toPoint.x} ${toPoint.y}` }
-      : computeRoutedPath(fromPoint, from!.dir, toPoint, to!.dir);
+      : wire.schematicWaypoint
+        // Manual override (spec follow-up: "drag wires around manually") —
+        // bypass the 45°-diagonal auto-router entirely and draw a straight
+        // two-segment path through the user's dragged bend point.
+        ? { points: [fromPoint, wire.schematicWaypoint, toPoint], d: pointsToPathD([fromPoint, wire.schematicWaypoint, toPoint]) }
+        : computeRoutedPath(fromPoint, from!.dir, toPoint, to!.dir);
     return {
       wireId: wire.id,
       refdes: wire.refdes,
@@ -103,6 +111,7 @@ export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
       routePoints: routed.points,
       path: routed.d,
       midpoint: pathMidpoint(routed.points),
+      manualWaypoint: wire.schematicWaypoint,
     };
   });
 

@@ -249,6 +249,17 @@ export interface Wire {
   /** Manual override; computed length still surfaced so a DRC rule can flag divergence. */
   lengthOverride?: number;
 
+  /** Manual routing override for the Schematic canvas only (distinct from
+   * `route`/Bundle.waypoints, which are physical Layout-space routing —
+   * Connor's follow-up: "can't drag wires around manually to place them as
+   * I wish"). When set, the Schematic renders a straight two-segment path
+   * from -> schematicWaypoint -> to instead of running the 45°-diagonal
+   * auto-router. Absent means auto-routed, same as before this field
+   * existed. Single point for now (one manual bend); a full manual
+   * polyline is a natural future extension of this same field becoming an
+   * array. */
+  schematicWaypoint?: Point;
+
   ends?: { source: WireEnd; target: WireEnd };
 
   custom: Record<string, unknown>;
