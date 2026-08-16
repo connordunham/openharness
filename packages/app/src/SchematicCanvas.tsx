@@ -44,7 +44,7 @@ import { useEffect, useRef } from 'react';
 import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
   SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
-  ShieldPart, ShieldType,
+  ShieldPart, ShieldType, ShieldTermination,
 } from '@openharness/core';
 import { newInstanceId, newPartId } from '@openharness/core';
 import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
@@ -119,6 +119,12 @@ const SHIELD_TYPES: { value: ShieldType; label: string }[] = [
   { value: 'foilBraid', label: 'Foil + braid' },
   { value: 'served', label: 'Served (spiral)' },
 ];
+const SHIELD_TERMINATION_STYLES: { value: NonNullable<ShieldTermination['style']>; label: string }[] = [
+  { value: 'pigtail', label: 'Pigtail' },
+  { value: 'lugTo360', label: 'Lug to 360° backshell' },
+  { value: 'drainWire', label: 'Drain wire' },
+  { value: 'none', label: 'None' },
+];
 const ACCESSORY_SLOTS = [
   { key: 'lockPartId', label: 'Lock', type: 'lock' },
   { key: 'dustCoverPartId', label: 'Dust cover', type: 'dustCover' },
@@ -150,68 +156,78 @@ function parseKey(key: string): { kind: 'wire' | 'group'; id: string } | null {
   return { kind, id: key.slice(i + 1) };
 }
 
-/** Twisted-pair visual (Connor: "if wires are grouped as a twisted pair,
- * show a wire twist visual in the schematic" — the halo alone looked
- * identical for `kind: 'twist'` and `kind: 'cable'` groups, no way to tell
- * a twisted pair from a plain bundled cable at a glance). Walks the
- * representative member's already-computed routed polyline and emits a
- * short perpendicular tick every `spacing` px, alternating sides — the
- * classic schematic "twisted lace" cue — without needing path-length DOM
- * queries, since it works directly off the same point array the router
- * already produced. */
-function twistTickPaths(points: Point[], spacing = 12, tickLen = 5): string[] {
-  if (points.length < 2) return [];
-  const ticks: string[] = [];
-  let carry = spacing / 2; // half-offset so ticks don't bunch right at corners
-  let side = 1;
+/** Twisted-pair visual (Connor: "show twisted pairs as twisted wires" — a
+ * previous tick-mark version read as faint dashes along one representative
+ * path, not as an actual twist between the real wires). Walks a member
+ * wire's own routed polyline and perturbs it perpendicular to the local
+ * direction by `amplitude * sin(2π·s/wavelength + phase)`, where `s` is
+ * cumulative arc length — a literal wavy overlay drawn ON TOP of that
+ * member's normal straight trace (the real trace/hit-target is untouched).
+ * Two members phase-shifted by π cross over each other every half
+ * wavelength, which is exactly what a twisted pair actually looks like. */
+function twistWavePath(points: Point[], phase: number, amplitude = 3, wavelength = 18): string {
+  if (points.length < 2) return '';
+  const STEP = 4; // sample every 4px of arc length for a smooth-looking curve
+  const out: Point[] = [];
+  let s = 0; // cumulative arc length up to the start of the current segment
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i]!;
     const b = points[i + 1]!;
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy);
-    if (len === 0) continue;
-    const ux = dx / len;
-    const uy = dy / len;
-    const px = -uy;
+    const segLen = Math.hypot(dx, dy);
+    if (segLen === 0) continue;
+    const ux = dx / segLen;
+    const uy = dy / segLen;
+    const px = -uy; // perpendicular unit vector
     const py = ux;
-    let d = carry;
-    while (d < len) {
-      const cx = a.x + ux * d;
-      const cy = a.y + uy * d;
-      ticks.push(`M ${cx - px * tickLen * side} ${cy - py * tickLen * side} L ${cx + px * tickLen * side} ${cy + py * tickLen * side}`);
-      side = -side;
-      d += spacing;
+    for (let d = 0; d < segLen; d += STEP) {
+      const wobble = amplitude * Math.sin((2 * Math.PI * (s + d)) / wavelength + phase);
+      out.push({ x: a.x + ux * d + px * wobble, y: a.y + uy * d + py * wobble });
     }
-    carry = d - len;
+    s += segLen;
   }
-  return ticks;
+  out.push(points[points.length - 1]!);
+  if (out.length === 0) return '';
+  return out.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
 }
 
 /** One shield termination mark — a dashed ellipse encircling the group's
- * member wires near one end of the run, plus the point its label sits at.
- * See `shieldTerminations` below for how the two (one per end) are built. */
-interface ShieldTermination {
+ * member wires near one end of the run, plus the point its label sits at,
+ * and which physical end (`from`/`to`) it represents (so the render pass
+ * can look up that end's termination style/note — a shield's two ends can
+ * terminate differently, e.g. a pigtail at one connector and a drain wire
+ * at the other, but `WireGroup.shield.termination` is a single field today;
+ * see the render pass for how that's handled). See `shieldTerminations`
+ * below for how the two (one per end) are built. */
+interface ShieldTerminationMark {
   center: Point;
   rx: number;
   ry: number;
   labelPoint: Point;
+  /** Which way the mark is inset from its connector face (+1/-1 along x) —
+   * used to orient the small termination-style glyph (pigtail/lug/drain)
+   * so it points outward from the ellipse, away from the open wire span. */
+  dir: 1 | -1;
 }
 
-/** Shield termination marks (Connor: "shields should appear like the
- * attached image in schematic, at each end, not some shaded tube") — a
- * dashed ellipse encircling the shielded group's member wires near EACH end
- * of the run, not a shaded tube running the full length. Built straight
- * from each member wire's own `from`/`to` endpoint (already resolved by the
- * routing engine, per-row), rather than the routed path, since what needs
- * encircling is "the wires at this end", not a point along a bend. The
- * ellipse sits offset inward from the connector face by `INSET` so it
- * doesn't overlap the node itself — matching the reference image, where the
- * dashed oval sits a short distance out from the pins, not right on them. */
-function shieldTerminations(members: SceneWire[]): ShieldTermination[] {
+/** Shield termination marks (Connor: "shields should appear ... at each
+ * end" / "should show how shield terminations [are done]") — a dashed
+ * ellipse encircling the shielded group's member wires near EACH end of the
+ * run, not a shaded tube running the full length. Built straight from each
+ * member wire's own `from`/`to` endpoint (already resolved by the routing
+ * engine, per-row), rather than the routed path, since what needs encircling
+ * is "the wires at this end", not a point along a bend. The ellipse sits
+ * offset inward from the connector face by `INSET` so it doesn't overlap the
+ * node itself — matching the reference image, where the dashed oval sits a
+ * short distance out from the pins, not right on them. (The render pass
+ * that uses this still draws AFTER every node box, specifically so a mark
+ * that ends up geometrically close to a connector — e.g. a short wire run —
+ * is never hidden behind it.) */
+function shieldTerminations(members: SceneWire[]): ShieldTerminationMark[] {
   if (members.length === 0) return [];
   const INSET = 26;
-  const build = (pick: (w: SceneWire) => Point, otherPick: (w: SceneWire) => Point): ShieldTermination => {
+  const build = (pick: (w: SceneWire) => Point, otherPick: (w: SceneWire) => Point): ShieldTerminationMark => {
     const pts = members.map(pick);
     const others = members.map(otherPick);
     const minY = Math.min(...pts.map((p) => p.y));
@@ -219,12 +235,13 @@ function shieldTerminations(members: SceneWire[]): ShieldTermination[] {
     const avgX = pts.reduce((s, p) => s + p.x, 0) / pts.length;
     const avgOtherX = others.reduce((s, p) => s + p.x, 0) / others.length;
     const avgY = (minY + maxY) / 2;
-    const dir = avgOtherX >= avgX ? 1 : -1; // inset toward the other end
+    const dir: 1 | -1 = avgOtherX >= avgX ? 1 : -1; // inset toward the other end
     return {
       center: { x: avgX + dir * INSET, y: avgY },
       rx: 15,
       ry: Math.max(16, (maxY - minY) / 2 + 9),
       labelPoint: { x: avgX + dir * INSET, y: minY - 12 },
+      dir,
     };
   };
   return [build((w) => w.from, (w) => w.to), build((w) => w.to, (w) => w.from)];
@@ -950,37 +967,6 @@ export function SchematicCanvas({
                 : 'Shielded';
               return (
                 <g key={`halo:${groupId}`}>
-                  {/* Shield termination marks (Connor: "shields should
-                     appear like the attached image in schematic, at each
-                     end, not some shaded tube") — a dashed ellipse
-                     encircling the group's member wires near EACH end of
-                     the run (see shieldTerminations), labeled with the
-                     shield's own refdes (SH1, SH2...), rather than a shaded
-                     tube running the whole length. */}
-                  {isShielded && shieldTerminations(members).map((mark, i) => (
-                    <g key={i}>
-                      <ellipse
-                        cx={mark.center.x} cy={mark.center.y} rx={mark.rx} ry={mark.ry}
-                        fill="none"
-                        stroke={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
-                        strokeWidth={1.4}
-                        strokeDasharray="4 3"
-                        style={{ cursor: 'pointer' }}
-                        onClick={(e) => onGroupHaloClick(groupId, e)}
-                        onContextMenu={(e) => onGroupContextMenu(groupId, e)}
-                      >
-                        <title>{`${group?.refdes ?? 'Shield'} — ${shieldLabel} termination`}</title>
-                      </ellipse>
-                      <text
-                        x={mark.labelPoint.x} y={mark.labelPoint.y} textAnchor="middle"
-                        fontSize={11} fontWeight={600}
-                        fill={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
-                        style={{ pointerEvents: 'none' }}
-                      >
-                        {group?.refdes ?? 'SHIELD'}
-                      </text>
-                    </g>
-                  ))}
                   <path
                     d={rep.path}
                     fill="none"
@@ -997,11 +983,21 @@ export function SchematicCanvas({
                       {isShielded ? ` — ${shieldLabel}` : ''}
                     </title>
                   </path>
-                  {isTwist && twistTickPaths(rep.routePoints).map((d, i) => (
+                  {/* Twisted-pair visual (Connor: "show twisted pairs as
+                     twisted wires") — each member's own trace gets a thin
+                     sinusoidal overlay, phase-shifted a half-cycle apart
+                     between members, so they visibly cross over each other
+                     at regular intervals like a real twisted pair, instead
+                     of the old perpendicular tick marks (which read as
+                     faint dashes along a single representative path rather
+                     than an actual twist between the real wires). */}
+                  {isTwist && members.map((m, i) => (
                     <path
-                      key={i} d={d}
+                      key={m.wireId}
+                      d={twistWavePath(m.routePoints, i * Math.PI)}
+                      fill="none"
                       stroke={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
-                      strokeOpacity={0.8} strokeWidth={1.3} strokeLinecap="round"
+                      strokeOpacity={0.85} strokeWidth={1.2}
                       style={{ pointerEvents: 'none' }}
                     />
                   ))}
@@ -1184,6 +1180,114 @@ export function SchematicCanvas({
                       </g>
                     );
                   })}
+                </g>
+              );
+            })}
+
+            {/* Shield termination marks (Connor: "shields should appear ...
+               at each end" / "should show how shield terminations [are
+               done]") — deliberately the LAST thing drawn in the SVG (after
+               every node box), so a mark that ends up geometrically close
+               to a connector — e.g. on a short wire run — is never hidden
+               behind it (the earlier version lived inside the halo pass,
+               which paints BEFORE nodes, so the far-end mark could vanish
+               under the destination connector's box; see file header on
+               `shieldTerminations`). Shows the termination style
+               (pigtail/lug-to-360°/drain wire) as a small glyph plus label,
+               and any free-text note (e.g. "terminates at J1 backshell")
+               underneath — the schematic-visual and text-note forms Connor
+               originally asked for alongside the data model itself. */}
+            {[...wiresByGroup.entries()].map(([groupId, members]) => {
+              const group = store.doc.wireGroups[groupId];
+              if (!group?.shield) return null;
+              const isSelected = selected?.kind === 'group' && selected.id === groupId;
+              const isMulti = multiSelect.has(groupKey(groupId));
+              const color = isSelected || isMulti ? theme.color.accent : theme.color.textMuted;
+              const shieldPart = group.shield.partId ? (store.doc.parts[group.shield.partId] as ShieldPart | undefined) : undefined;
+              const shieldLabel = shieldPart
+                ? SHIELD_TYPES.find((t) => t.value === shieldPart.shieldType)?.label ?? 'Shielded'
+                : 'Shielded';
+              const term = group.shield.termination;
+              const termStyleLabel = term?.style ? SHIELD_TERMINATION_STYLES.find((t) => t.value === term.style)?.label : undefined;
+              const marks = shieldTerminations(members);
+              return (
+                <g key={`shieldterm:${groupId}`}>
+                  {marks.map((mark, i) => (
+                    <g key={i}>
+                      <ellipse
+                        cx={mark.center.x} cy={mark.center.y} rx={mark.rx} ry={mark.ry}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={1.4}
+                        strokeDasharray="4 3"
+                        style={{ cursor: 'pointer' }}
+                        onClick={(e) => onGroupHaloClick(groupId, e)}
+                        onContextMenu={(e) => onGroupContextMenu(groupId, e)}
+                      >
+                        <title>
+                          {`${group.refdes ?? 'Shield'} — ${shieldLabel} termination`}
+                          {termStyleLabel ? ` (${termStyleLabel})` : ''}
+                          {term?.note ? `: ${term.note}` : ''}
+                        </title>
+                      </ellipse>
+                      {/* Termination-style glyph, pointing outward (away
+                         from the open wire span, toward the connector this
+                         end terminates at). */}
+                      {term?.style === 'pigtail' && (
+                        <path
+                          d={`M ${mark.center.x + mark.dir * mark.rx} ${mark.center.y} q ${mark.dir * 9} -7 ${mark.dir * 15} 3`}
+                          fill="none" stroke={color} strokeWidth={1.4} strokeLinecap="round"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      )}
+                      {term?.style === 'lugTo360' && (
+                        <>
+                          <line
+                            x1={mark.center.x + mark.dir * mark.rx} y1={mark.center.y}
+                            x2={mark.center.x + mark.dir * (mark.rx + 10)} y2={mark.center.y}
+                            stroke={color} strokeWidth={1.4} style={{ pointerEvents: 'none' }}
+                          />
+                          <circle
+                            cx={mark.center.x + mark.dir * (mark.rx + 13)} cy={mark.center.y} r={3}
+                            fill={color} style={{ pointerEvents: 'none' }}
+                          />
+                        </>
+                      )}
+                      {term?.style === 'drainWire' && (
+                        <line
+                          x1={mark.center.x + mark.dir * mark.rx} y1={mark.center.y}
+                          x2={mark.center.x + mark.dir * (mark.rx + 16)} y2={mark.center.y}
+                          stroke={color} strokeWidth={1.2} strokeDasharray="1 2" strokeLinecap="round"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      )}
+                      <text
+                        x={mark.labelPoint.x} y={mark.labelPoint.y} textAnchor="middle"
+                        fontSize={11} fontWeight={600} fill={color}
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        {group.refdes ?? 'SHIELD'}
+                      </text>
+                      {termStyleLabel && (
+                        <text
+                          x={mark.labelPoint.x} y={mark.labelPoint.y - 12} textAnchor="middle"
+                          fontSize={9} fill={color}
+                          style={{ pointerEvents: 'none' }}
+                        >
+                          {termStyleLabel}
+                        </text>
+                      )}
+                    </g>
+                  ))}
+                  {term?.note && marks[0] && (
+                    <text
+                      x={marks[0].labelPoint.x} y={marks[0].center.y + marks[0].ry + 13} textAnchor="middle"
+                      fontSize={9.5} fontStyle="italic" fill={theme.color.textFaint}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {term.note}
+                    </text>
+                  )}
                 </g>
               );
             })}
@@ -1738,6 +1842,22 @@ function GroupInspector({
     });
   };
 
+  /** Shield termination (Connor: "shields should ... show how shield
+   * terminations [are done] ... text notes that can point to the
+   * backshell") — `group.shield.termination` mirrors the same
+   * lazy-init-on-first-edit pattern the rest of this card avoids (everything
+   * else here eagerly creates its target), because unlike the ShieldPart
+   * itself, termination has no meaningful "on" toggle of its own — it just
+   * starts empty and fills in as fields are set. */
+  const updateTermination = (mutate: (t: ShieldTermination) => void) => {
+    store.transact('Edit shield termination', (draft) => {
+      const g = draft.wireGroups[group.id];
+      if (!g?.shield) return;
+      if (!g.shield.termination) g.shield.termination = {};
+      mutate(g.shield.termination);
+    });
+  };
+
   const setKind = (kind: 'twist' | 'cable') => {
     store.transact('Set group kind', (draft) => {
       const g = draft.wireGroups[group.id];
@@ -1856,6 +1976,24 @@ function GroupInspector({
               />
               Drain wire
             </label>
+
+            <label style={s.fieldLabel}>Termination</label>
+            <select
+              style={s.input} value={group.shield.termination?.style ?? ''}
+              onChange={(e) => {
+                const v = e.target.value as ShieldTermination['style'];
+                updateTermination((t) => { t.style = v || undefined; });
+              }}
+            >
+              <option value="">(unspecified)</option>
+              {SHIELD_TERMINATION_STYLES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            <label style={s.fieldLabel}>Note (e.g. pointer to backshell)</label>
+            <input
+              style={s.input} value={group.shield.termination?.note ?? ''}
+              placeholder="e.g. terminates at J1 backshell, 360° clamp"
+              onChange={(e) => { const v = e.target.value; updateTermination((t) => { t.note = v || undefined; }); }}
+            />
           </>
         )}
 
