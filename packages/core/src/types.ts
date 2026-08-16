@@ -117,10 +117,26 @@ export interface ComponentBase {
   custom: Record<string, unknown>;
 }
 
+/** [inferred] — Connor's follow-up: "Add directionality to the pins defined
+ * on each connector... toggle between bi-directional, input, and output."
+ * Lives per-cavity (and per-CableCore below) since directionality is a
+ * property of the signal at that exit point, not of the wire connecting two
+ * of them — the interconnect table (derive/interconnect.ts) resolves a
+ * wire's overall direction by comparing its two endpoints' declared
+ * directions. Unset means "not specified" and renders/behaves exactly like
+ * 'bidirectional' everywhere (no behavior change for any pre-existing
+ * document). */
+export type SignalDirection = 'bidirectional' | 'input' | 'output';
+
 export interface Cavity {
   id: CavityId;
   designation: string;
   signal?: string;
+  /** [inferred] — see SignalDirection doc comment. */
+  direction?: SignalDirection;
+  /** [inferred] — Connor's follow-up: "a separate field for whether the
+   * signal is impedance matched." */
+  impedanceMatched?: boolean;
   global?: boolean;
   noPropagate?: boolean;
   sealPartId?: PartId;
@@ -174,6 +190,10 @@ export interface CableCore {
   color: string;
   signal?: string;
   designation?: string;
+  /** [inferred] — same affordance as Cavity.direction/impedanceMatched; a
+   * cable core carries a signal exactly like a connector cavity does. */
+  direction?: SignalDirection;
+  impedanceMatched?: boolean;
 }
 
 /**
@@ -350,6 +370,17 @@ export interface Bundle {
   /** Authored length in the document's lengthUnit at the API boundary; stored as integer µm internally (spec §6.3). */
   length?: number;
   waypoints?: Point[];
+  /** [inferred] — Connor's follow-up: "Dimensions between each routing point
+   * should be able to be recorded (every single point), but the layout can
+   * be assumed to be not to scale." One entry per segment of the path
+   * `[source, ...waypoints, target]` (so `segmentLengths.length` should equal
+   * `(waypoints?.length ?? 0) + 1`), in the document's lengthUnit — a hole
+   * (`undefined`) just means that particular segment hasn't been measured
+   * yet, same "unset = not authored" convention `length` already uses.
+   * `derive/bundleLength.ts` sums whichever of `segmentLengths` / `length`
+   * is more specific; nothing here implies the on-screen line is drawn to
+   * scale (it never is — see LayoutCanvas.tsx's fixed PX_PER_MM). */
+  segmentLengths?: (number | undefined)[];
   custom: Record<string, unknown>;
 }
 
@@ -534,6 +565,44 @@ export interface BomLine {
   warnings: string[];
 }
 
+/**
+ * [inferred] — Connor's follow-up: "the schematic [should be] bidirectionally
+ * convertible to an interconnect table... capture where each signal goes (to
+ * and from, if directionality is defined)." One row per wire; `resolved`
+ * folds each endpoint's own `SignalDirection` into a single answer for the
+ * pair, since direction is authored per-cavity/per-core, not per-wire (see
+ * SignalDirection's doc comment) — 'sourceToTarget'/'targetToSource' when the
+ * two ends disagree in a consistent way (one's an output, the other's an
+ * input), 'bidirectional' when neither end asserts a direction or both
+ * assert the same one, and 'conflict' for the nonsensical case of both ends
+ * independently claiming to be an output (or both an input) — surfaced
+ * rather than silently guessed, so a bad table import is visible instead of
+ * quietly wrong. Every wire gets a row, even ones with no signal name on
+ * either end (fromSignal/toSignal fall back to undefined, matching how the
+ * BOM/Layout tooltips already treat unnamed wires) — the table's whole job
+ * is to be a complete, lossless alternate view of the same connectivity the
+ * Schematic canvas draws, in both directions of sync (see interconnect.ts's
+ * `computeInterconnectTable` doc comment for the reverse direction).
+ */
+export interface InterconnectRow {
+  wireId: WireId;
+  wireRefdes: string;
+  fromComponentId?: ComponentId;
+  fromComponentRefdes: string;
+  fromDesignation?: string;
+  fromSignal?: string;
+  fromDirection?: SignalDirection;
+  fromImpedanceMatched?: boolean;
+  toComponentId?: ComponentId;
+  toComponentRefdes: string;
+  toDesignation?: string;
+  toSignal?: string;
+  toDirection?: SignalDirection;
+  toImpedanceMatched?: boolean;
+  resolved: 'sourceToTarget' | 'targetToSource' | 'bidirectional' | 'conflict';
+  impedanceMatched: boolean;
+}
+
 export type DiagnosticSeverity = 'error' | 'warning' | 'info';
 
 export interface Diagnostic {
@@ -552,4 +621,5 @@ export interface DerivedModel {
   bundleDiameters: Map<BundleId, number>;
   bom: BomLine[];
   diagnostics: Diagnostic[];
+  interconnect: InterconnectRow[];
 }

@@ -11,7 +11,7 @@
  * fancier routing is a rendering-quality improvement, not a data-model one.
  */
 
-import type { HarnessDocument, Component, Endpoint, Point } from '@openharness/core';
+import type { HarnessDocument, Component, Endpoint, Point, SignalDirection } from '@openharness/core';
 import { computeRoutedPath, pathMidpoint, pointsToPathD, type ExitDir } from './routing.js';
 
 export const ROW_HEIGHT = 22;
@@ -26,6 +26,17 @@ export interface SceneRow {
   point: Point;
   /** Which way this port's lead physically points — see routing.ts. */
   dir: ExitDir;
+  /** Set only for rows backed by a real Cavity/CableCore (connector
+   * cavities, cable cores) — undefined for splice/terminal/two-terminal
+   * single-port rows, which have no signal-direction concept of their own
+   * (Connor: "add directionality to the pins defined on each connector").
+   * `signalCapable` is the discriminator the app uses to decide whether to
+   * draw the direction-toggle/impedance controls and exit-direction
+   * triangle on this row at all — it's true even when `direction` itself is
+   * unset (unset just means "not specified yet", still a settable field). */
+  signalCapable: boolean;
+  direction?: SignalDirection;
+  impedanceMatched?: boolean;
 }
 
 export interface SceneNode {
@@ -140,6 +151,9 @@ function buildNode(component: Component): SceneNode | null {
         signal: cavity.signal,
         point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
         dir,
+        signalCapable: true,
+        direction: cavity.direction,
+        impedanceMatched: cavity.impedanceMatched,
       }));
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
@@ -158,6 +172,9 @@ function buildNode(component: Component): SceneNode | null {
         signal: core.signal,
         point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
         dir,
+        signalCapable: true,
+        direction: core.direction,
+        impedanceMatched: core.impedanceMatched,
       }));
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
@@ -180,8 +197,8 @@ function buildNode(component: Component): SceneNode | null {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width, height,
         rows: [
-          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 }, dir: 'left' },
-          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 }, dir: 'right' },
+          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 }, dir: 'left', signalCapable: false },
+          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 }, dir: 'right', signalCapable: false },
         ],
       };
     }
@@ -198,7 +215,7 @@ function buildNode(component: Component): SceneNode | null {
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width, height,
-        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: exitX, y: pos.y + height / 2 }, dir }],
+        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: exitX, y: pos.y + height / 2 }, dir, signalCapable: false }],
       };
     }
     case 'resistor':
@@ -209,8 +226,8 @@ function buildNode(component: Component): SceneNode | null {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width, height,
         rows: [
-          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 }, dir: 'left' },
-          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 }, dir: 'right' },
+          { rowId: `${component.id}:Left`, label: 'L', point: { x: pos.x, y: pos.y + height / 2 }, dir: 'left', signalCapable: false },
+          { rowId: `${component.id}:Right`, label: 'R', point: { x: pos.x + width, y: pos.y + height / 2 }, dir: 'right', signalCapable: false },
         ],
       };
     }

@@ -44,13 +44,14 @@ import { useEffect, useRef } from 'react';
 import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
   SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
-  ShieldPart, ShieldType, ShieldTermination, Part,
+  ShieldPart, ShieldType, ShieldTermination, Part, SignalDirection,
 } from '@openharness/core';
 import { newInstanceId, newPartId } from '@openharness/core';
 import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
-import { nextLayoutGrid } from './layoutGrid.js';
+import { nextLayoutGrid, autoRouteInLayout } from './layoutGrid.js';
+import { nextGridPosition, nextRefdes } from './schematicGrid.js';
 import { useCanvasPan } from './canvasPan.js';
 import { SHIELD_TYPES, SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
 import { PartCommonFields } from './partFields.js';
@@ -430,57 +431,38 @@ function endpointComponentId(ep: Endpoint): string | undefined {
   return ep.kind === 'free' ? undefined : ep.componentId;
 }
 
-/** Same grid formula as `nextLayoutGrid` (layoutGrid.ts), but reading the
- * in-flight `draft` instead of `store.doc` — needed here because a single
- * wire can require placing BOTH of its components in the same transact
- * (`nextLayoutGrid(store)` would read the same stale `store.doc` twice and
- * hand back the same slot for both). */
-function nextLayoutGridFromDraft(draft: HarnessDocument): Point {
-  const placed = Object.values(draft.components).filter((c) => !!c.layoutPosition).length;
-  return { x: 20 + (placed % 5) * 60, y: 20 + Math.floor(placed / 5) * 50 };
+/** Click-to-cycle order for the schematic row's direction toggle (Connor:
+ * "toggle between bi-directional, input, and output") — undefined reads the
+ * same as 'bidirectional' (see SignalDirection's doc comment in
+ * core/types.ts), so the cycle starts from there and visits every state in
+ * one predictable loop: unset/bidirectional -> output -> input -> back to
+ * bidirectional. */
+function cycleDirection(current: SignalDirection | undefined): SignalDirection {
+  if (current === 'output') return 'input';
+  if (current === 'input') return 'bidirectional';
+  return 'output';
 }
 
-/** Connor: "all routing in schematic should appear automatically in the
- * layout as well" — the same "automatic" philosophy as auto-placement
- * (nextLayoutGrid) and auto-orientation (LayoutCanvas's nodeAngles),
- * extended from "the component exists in Layout" to "the physical route
- * between two connected components exists in Layout too." Called right
- * after a wire is drawn between two components in Schematic: makes sure
- * both ends are placed (defensive — they're normally already placed by the
- * "Add X" actions' own auto-placement, but an imported or programmatically
- * created component might not be), then makes sure a Bundle directly
- * connects them, unless one already does (in either direction). Doesn't
- * touch branch points — those are pure layout topology the user places and
- * wires up deliberately (spec §4.2), not something to auto-route through. */
-function autoRouteInLayout(draft: HarnessDocument, componentIdA: string, componentIdB: string): void {
-  if (componentIdA === componentIdB) return;
-  const a = draft.components[componentIdA];
-  const b = draft.components[componentIdB];
-  if (!a || !b || a.type === 'branchPoint' || b.type === 'branchPoint') return;
-  if (!a.layoutPosition) a.layoutPosition = nextLayoutGridFromDraft(draft);
-  if (!b.layoutPosition) b.layoutPosition = nextLayoutGridFromDraft(draft);
-  const alreadyRouted = Object.values(draft.bundles).some(
-    (bd) => (bd.sourceId === componentIdA && bd.targetId === componentIdB) || (bd.sourceId === componentIdB && bd.targetId === componentIdA),
-  );
-  if (!alreadyRouted) {
-    const id = newInstanceId();
-    const n = Object.keys(draft.bundles).length;
-    draft.bundles[id] = { id, refdes: `BND${n + 1}`, sourceId: componentIdA, targetId: componentIdB, custom: {} };
+/** Mutates whichever signal-capable row (a connector Cavity or a Cable
+ * core/shield — the only two `Component` sub-shapes with a direction/
+ * impedanceMatched field, see SceneRow.signalCapable) backs `rowId` on
+ * `componentId`. Shared by the direction-cycle and impedance-toggle click
+ * handlers below and by the fuller Properties-tab editor further down this
+ * file, so both surfaces agree on exactly what they're editing. */
+function updateSignalRow(
+  draft: HarnessDocument,
+  componentId: string,
+  rowId: string,
+  mutate: (row: { direction?: SignalDirection; impedanceMatched?: boolean }) => void,
+) {
+  const c = draft.components[componentId];
+  if (c?.type === 'connector') {
+    const cav = c.cavities.find((cv) => cv.id === rowId);
+    if (cav) mutate(cav);
+  } else if (c?.type === 'cable') {
+    const core = [...c.cores, ...(c.shield ? [c.shield] : [])].find((cr) => cr.id === rowId);
+    if (core) mutate(core);
   }
-}
-
-function nextRefdes(store: HarnessStore, prefix: string, type: Component['type']): string {
-  const count = Object.values(store.doc.components).filter((c) => c.type === type).length;
-  return `${prefix}${count + 1}`;
-}
-
-/** Rough grid placement shared by every "Add X" action, so mixed component
- * types don't stack on top of each other. */
-function nextGridPosition(store: HarnessStore): Point {
-  const placed =
-    Object.values(store.doc.components).filter((c) => !!c.schematicPosition).length +
-    Object.keys(store.doc.notes).length;
-  return { x: 60 + (placed % 4) * 230, y: 70 + Math.floor(placed / 4) * 180 };
 }
 
 /** A component's own part number, or '' if it has none yet — used by the
@@ -1545,6 +1527,84 @@ export function SchematicCanvas({
                           style={{ cursor: 'crosshair' }}
                           onClick={(e) => { e.stopPropagation(); onRowClick(node, row); }}
                         />
+                        {/* Direction toggle + impedance-matched chip (Connor:
+                           "a clean ui interface on signal of each connector
+                           that allows the user to toggle between
+                           bi-directional, input, and output plus a separate
+                           field for whether the signal is impedance
+                           matched") — only on rows backed by a real
+                           Cavity/CableCore (SceneRow.signalCapable); splice/
+                           terminal/two-terminal ports have no signal
+                           direction concept. Small abstract glyphs (↔/→/←)
+                           rather than a dropdown so they fit inline on the
+                           row without a popup — the *physically* oriented
+                           indicator (which way, given this row's actual
+                           left/right exit) is the separate triangle drawn at
+                           the pin itself, just below. */}
+                        {row.signalCapable && (() => {
+                          const inward = row.dir === 'right' ? -1 : 1;
+                          const cy = row.point.y;
+                          const zX = row.point.x + inward * 26;
+                          const dirX = row.point.x + inward * 13;
+                          const dirGlyph = row.direction === 'output' ? '→' : row.direction === 'input' ? '←' : '↔';
+                          const zActive = !!row.impedanceMatched;
+                          return (
+                            <g>
+                              <g
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  store.transact('Toggle impedance matched', (draft) => {
+                                    updateSignalRow(draft, node.componentId, row.rowId, (r) => { r.impedanceMatched = !r.impedanceMatched; });
+                                  });
+                                }}
+                                style={{ cursor: 'pointer' }}
+                              >
+                                <title>{zActive ? 'Impedance matched — click to clear' : 'Mark impedance matched'}</title>
+                                <rect
+                                  x={zX - 6} y={cy - 6} width={12} height={12} rx={2}
+                                  fill={zActive ? theme.color.accent : theme.color.canvasBg}
+                                  stroke={zActive ? theme.color.accent : theme.color.border} strokeWidth={1}
+                                />
+                                <text x={zX} y={cy + 3} fontSize={8} fontWeight={700} textAnchor="middle" fill={zActive ? '#fff' : theme.color.textFaint}>Z</text>
+                              </g>
+                              <g
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  store.transact('Cycle signal direction', (draft) => {
+                                    updateSignalRow(draft, node.componentId, row.rowId, (r) => { r.direction = cycleDirection(r.direction); });
+                                  });
+                                }}
+                                style={{ cursor: 'pointer' }}
+                              >
+                                <title>{`Direction: ${row.direction ?? 'bidirectional'} — click to change`}</title>
+                                <circle cx={dirX} cy={cy} r={7} fill={theme.color.canvasBg} stroke={theme.color.border} strokeWidth={1} />
+                                <text x={dirX} y={cy + 3} fontSize={9} textAnchor="middle" fill={theme.color.textMuted}>{dirGlyph}</text>
+                              </g>
+                            </g>
+                          );
+                        })()}
+                        {/* Exit-direction triangle (Connor: "the direction of
+                           the signal should appear as a small visual element
+                           right where the signal exits the connector — small
+                           triangle indicating respective direction") — points
+                           away from the box for an output, toward it for an
+                           input, and is omitted entirely for
+                           bidirectional/unset (the plain circle already
+                           covers that default case, same as before this
+                           feature existed). */}
+                        {row.signalCapable && row.direction && row.direction !== 'bidirectional' && (() => {
+                          const facingRight = row.dir === 'right';
+                          const pointsRight = row.direction === 'output' ? facingRight : !facingRight;
+                          const tipX = row.point.x + (pointsRight ? 9 : -9);
+                          const baseX = row.point.x + (pointsRight ? 2 : -2);
+                          return (
+                            <polygon
+                              points={`${tipX},${row.point.y} ${baseX},${row.point.y - 4} ${baseX},${row.point.y + 4}`}
+                              fill={theme.color.accent}
+                              style={{ pointerEvents: 'none' }}
+                            />
+                          );
+                        })()}
                       </g>
                     );
                   })}
@@ -1815,6 +1875,45 @@ function InlineSignalInput({ initialValue, onCommit, onCancel }: { initialValue:
   );
 }
 
+/** The Properties-tab counterpart of the on-canvas direction/impedance
+ * controls (see the row-rendering block above) — a real dropdown + checkbox
+ * instead of tiny click-to-cycle glyphs, for anyone who'd rather not guess
+ * what an arrow icon means. Both surfaces edit the exact same two fields;
+ * `onChange` receives a mutator so the caller (a connector's cavity or a
+ * cable's core — the only two row shapes with a direction) can apply it to
+ * whichever one it actually owns without this component needing to know. */
+function SignalDirectionRow({
+  direction, impedanceMatched, onChange,
+}: {
+  direction: SignalDirection | undefined;
+  impedanceMatched: boolean | undefined;
+  onChange: (mutate: (row: { direction?: SignalDirection; impedanceMatched?: boolean }) => void) => void;
+}) {
+  return (
+    <div style={s.signalSubRow}>
+      <select
+        style={s.dirSelect}
+        value={direction ?? 'bidirectional'}
+        onChange={(e) => {
+          const value = e.target.value as SignalDirection;
+          onChange((row) => { row.direction = value === 'bidirectional' ? undefined : value; });
+        }}
+      >
+        <option value="bidirectional">Bidirectional</option>
+        <option value="output">Output</option>
+        <option value="input">Input</option>
+      </select>
+      <label style={s.zCheckLabel}>
+        <input
+          type="checkbox" checked={!!impedanceMatched}
+          onChange={(e) => { const checked = e.target.checked; onChange((row) => { row.impedanceMatched = checked || undefined; }); }}
+        />
+        Impedance matched
+      </label>
+    </div>
+  );
+}
+
 /** The `− N +` stepper the reference app floats above a selected connector
  * (spec §2.3). Removing is guarded: it only ever drops the trailing cavity,
  * and refuses if that cavity has a wire on it. */
@@ -1954,17 +2053,29 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
       {component.type === 'connector' && (
         <div style={s.rowList}>
           {component.cavities.map((cavity, i) => (
-            <div key={cavity.id} style={s.signalRow}>
-              <span style={s.signalRowTag}>{cavity.designation}</span>
-              <input
-                style={s.signalInput}
-                placeholder="Signal"
-                value={cavity.signal ?? ''}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  store.transact('Edit cavity signal', (draft) => {
+            <div key={cavity.id} style={s.signalRowGroup}>
+              <div style={s.signalRow}>
+                <span style={s.signalRowTag}>{cavity.designation}</span>
+                <input
+                  style={s.signalInput}
+                  placeholder="Signal"
+                  value={cavity.signal ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    store.transact('Edit cavity signal', (draft) => {
+                      const c = draft.components[component.id];
+                      if (c?.type === 'connector') c.cavities[i]!.signal = value || undefined;
+                    });
+                  }}
+                />
+              </div>
+              <SignalDirectionRow
+                direction={cavity.direction}
+                impedanceMatched={cavity.impedanceMatched}
+                onChange={(mutate) => {
+                  store.transact('Edit signal direction', (draft) => {
                     const c = draft.components[component.id];
-                    if (c?.type === 'connector') c.cavities[i]!.signal = value || undefined;
+                    if (c?.type === 'connector') mutate(c.cavities[i]!);
                   });
                 }}
               />
@@ -1977,25 +2088,37 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
         <>
           <div style={s.sectionLabel}>Cores</div>
           {component.cores.map((core, i) => (
-            <div key={core.id} style={s.subRow}>
-              <span style={s.subRowTag}>{core.designation ?? i + 1}</span>
-              <input
-                style={s.input} placeholder="color" value={core.color}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  store.transact('Edit core color', (draft) => {
+            <div key={core.id} style={s.signalRowGroup}>
+              <div style={s.subRow}>
+                <span style={s.subRowTag}>{core.designation ?? i + 1}</span>
+                <input
+                  style={s.input} placeholder="color" value={core.color}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    store.transact('Edit core color', (draft) => {
+                      const c = draft.components[component.id];
+                      if (c?.type === 'cable') c.cores[i]!.color = value;
+                    });
+                  }}
+                />
+                <input
+                  style={s.input} placeholder="signal" value={core.signal ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    store.transact('Edit core signal', (draft) => {
+                      const c = draft.components[component.id];
+                      if (c?.type === 'cable') c.cores[i]!.signal = value || undefined;
+                    });
+                  }}
+                />
+              </div>
+              <SignalDirectionRow
+                direction={core.direction}
+                impedanceMatched={core.impedanceMatched}
+                onChange={(mutate) => {
+                  store.transact('Edit signal direction', (draft) => {
                     const c = draft.components[component.id];
-                    if (c?.type === 'cable') c.cores[i]!.color = value;
-                  });
-                }}
-              />
-              <input
-                style={s.input} placeholder="signal" value={core.signal ?? ''}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  store.transact('Edit core signal', (draft) => {
-                    const c = draft.components[component.id];
-                    if (c?.type === 'cable') c.cores[i]!.signal = value || undefined;
+                    if (c?.type === 'cable') mutate(c.cores[i]!);
                   });
                 }}
               />
@@ -2676,9 +2799,20 @@ const s = {
   cardBody: { padding: 12, maxHeight: 360, overflowY: 'auto' },
 
   rowList: { display: 'flex', flexDirection: 'column', gap: 1 },
+  signalRowGroup: { display: 'flex', flexDirection: 'column' },
   signalRow: {
     display: 'flex', alignItems: 'center', gap: 8, padding: '6px 6px',
     borderRadius: 6,
+  },
+  signalSubRow: {
+    display: 'flex', alignItems: 'center', gap: 8, padding: '0 6px 6px 32px',
+  },
+  dirSelect: {
+    fontSize: 10.5, color: theme.color.textMuted, border: `1px solid ${theme.color.border}`,
+    borderRadius: theme.radius.control, padding: '2px 4px', background: theme.color.surface,
+  },
+  zCheckLabel: {
+    display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, color: theme.color.textFaint, cursor: 'pointer',
   },
   signalRowTag: {
     width: 18, textAlign: 'center', fontSize: 11.5, fontWeight: 700, color: theme.color.accent,

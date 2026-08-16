@@ -23,6 +23,7 @@
 
 import type { HarnessDocument, Endpoint, RouteResult, Cable } from '../types.js';
 import type { ComponentId, BundleId } from '../ids.js';
+import { bundleAuthoredLength } from './bundleLength.js';
 
 export function computeRoutes(doc: HarnessDocument): Map<string, RouteResult> {
   const graph = buildLayoutGraph(doc);
@@ -171,9 +172,9 @@ function buildLayoutGraph(doc: HarnessDocument): LayoutGraph {
     const b = doc.components[bundle.targetId];
     if (!a || !b) continue;
 
-    const authored = bundle.length !== undefined;
+    const { valueMm, authored } = bundleAuthoredLength(bundle);
     const weightUm = authored
-      ? Math.round(bundle.length! * 1000) // bundle.length is authored in mm at this layer (spec §6.3)
+      ? Math.round(valueMm * 1000) // authored in mm at this layer (spec §6.3)
       : geometricDistanceUm(a.layoutPosition, b.layoutPosition);
 
     bundlesById.set(bundleId, { sourceId: bundle.sourceId, targetId: bundle.targetId, authored });

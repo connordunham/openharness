@@ -21,6 +21,7 @@ import { computeLengths } from './length.js';
 import { computeBundleContents, computeBundleDiameters } from './bundleAnalysis.js';
 import { computeBom } from './bom.js';
 import { runBuiltInRules } from './rules.js';
+import { computeInterconnectTable } from './interconnect.js';
 
 export function computeDerivedModel(doc: HarnessDocument): DerivedModel {
   const { nets, conflicts } = extractNets(doc);
@@ -30,6 +31,7 @@ export function computeDerivedModel(doc: HarnessDocument): DerivedModel {
   const bundleDiameters = computeBundleDiameters(doc, bundleContents);
   const bom = computeBom(doc, wireLengths);
   const diagnostics = runBuiltInRules({ doc, nets, conflicts, wireRoutes, bundleContents, bom });
+  const interconnect = computeInterconnectTable(doc);
 
   // Array-valued outputs are sorted into a deterministic order before being
   // returned. Internally they're built by walking `Object.entries(doc.*)`,
@@ -47,5 +49,7 @@ export function computeDerivedModel(doc: HarnessDocument): DerivedModel {
   });
   nets.sort((a, b) => a.id.localeCompare(b.id));
 
-  return { nets, wireRoutes, wireLengths, bundleContents, bundleDiameters, bom, diagnostics };
+  interconnect.sort((a, b) => a.wireRefdes.localeCompare(b.wireRefdes));
+
+  return { nets, wireRoutes, wireLengths, bundleContents, bundleDiameters, bom, diagnostics, interconnect };
 }

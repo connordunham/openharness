@@ -27,14 +27,19 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { createEmptyDocument, computeDerivedModel, type HarnessDocument, type DiagnosticSeverity } from '@openharness/core';
-import { importVendorJson, serializeDocument, parseDocument, bomToCsv, type RawHarnessDocument } from '@openharness/io';
+import {
+  importVendorJson, serializeDocument, parseDocument, bomToCsv,
+  interconnectToCsv, interconnectFromCsv, type RawHarnessDocument,
+} from '@openharness/io';
 import { useHarnessStore } from './useHarnessStore.js';
 import { SchematicCanvas } from './SchematicCanvas.js';
 import { BomPane } from './BomPane.js';
 import { LayoutCanvas } from './LayoutCanvas.js';
+import { InterconnectTablePane } from './InterconnectTablePane.js';
+import { applyInterconnectRow, parseInterconnectCsvRow } from './interconnectEdit.js';
 import { theme } from './theme.js';
 
-type PaneView = 'schematic' | 'layout' | 'bom' | 'overview';
+type PaneView = 'schematic' | 'layout' | 'table' | 'bom' | 'overview';
 type SplitLayout = 'single' | 'split-h' | 'split-v' | 'quad';
 
 const PANE_COUNT: Record<SplitLayout, number> = { single: 1, 'split-h': 2, 'split-v': 2, quad: 4 };
@@ -195,6 +200,55 @@ export function App() {
     }
   }, [store]);
 
+  // Interconnect table export/import (Connor: "add a new type of
+  // window/export format... bidirectionally convertible" with the
+  // Schematic). Export is a plain derived-view dump, same shape as BOM CSV
+  // above. Import is the Table -> Schematic direction of that sync — every
+  // parsed row is applied via the same `applyInterconnectRow` helper the
+  // Table pane's own "+ Add connection" form uses, so an interconnect table
+  // authored entirely outside this app (a spreadsheet) can grow a full
+  // schematic with no manual re-entry (Connor: "if the table exists, then
+  // the schematic should automatically be generated").
+  const exportInterconnect = useCallback(async () => {
+    if (!store) return;
+    setError(null);
+    try {
+      await window.openharness.saveFile({
+        title: 'Export interconnect table as CSV',
+        defaultPath: `${store.doc.meta.name}-interconnect.csv`,
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+        contents: interconnectToCsv(store.derived.interconnect),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [store]);
+
+  const importInterconnect = useCallback(async () => {
+    if (!store) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const picked = await window.openharness.pickFile({
+        title: 'Import interconnect table CSV',
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+      });
+      if (!picked) return;
+      const rows = interconnectFromCsv(picked.contents);
+      store.transact('Import interconnect table', (draft) => {
+        let colorIndex = Object.keys(draft.wires).length;
+        for (const row of rows) {
+          applyInterconnectRow(draft, parseInterconnectCsvRow(row), colorIndex);
+          colorIndex++;
+        }
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [store]);
+
   // Hotkeys: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y (spec §2.8).
   useEffect(() => {
     if (!store) return;
@@ -237,6 +291,8 @@ export function App() {
             hoveredBundleId={hoveredBundleId} onHoverBundle={setHoveredBundleId}
           />
         );
+      case 'table':
+        return <InterconnectTablePane store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
       case 'bom':
         return <BomPane store={store} hoveredComponentId={hoveredComponentId} onHoverComponent={setHoveredComponentId} />;
       case 'overview':
@@ -310,6 +366,8 @@ export function App() {
           <button style={styles.button} disabled={busy} onClick={() => void load('ohd')}>Open .ohd…</button>
           <button style={styles.buttonPrimary} disabled={!store} onClick={() => void saveOhd()}>Save as .ohd…</button>
           <button style={styles.button} disabled={!store} onClick={() => void exportBom()}>Export BOM CSV…</button>
+          <button style={styles.button} disabled={!store} onClick={() => void exportInterconnect()}>Export Interconnect CSV…</button>
+          <button style={styles.button} disabled={!store || busy} onClick={() => void importInterconnect()}>Import Interconnect CSV…</button>
         </div>
 
         {store && splitLayout === 'single' && (
@@ -319,6 +377,9 @@ export function App() {
             </button>
             <button style={styles.tabButton(paneViews[0] === 'layout')} onClick={() => setPaneView(0, 'layout')}>
               Layout
+            </button>
+            <button style={styles.tabButton(paneViews[0] === 'table')} onClick={() => setPaneView(0, 'table')}>
+              Table
             </button>
             <button style={styles.tabButton(paneViews[0] === 'bom')} onClick={() => setPaneView(0, 'bom')}>
               BOM
@@ -393,6 +454,7 @@ export function App() {
                   >
                     <option value="schematic">Schematic</option>
                     <option value="layout">Layout</option>
+                    <option value="table">Table</option>
                     <option value="bom">BOM{store && Object.keys(store.doc.parts).length > 0 ? ` (${Object.keys(store.doc.parts).length})` : ''}</option>
                     <option value="overview">Overview{derived && derived.diagnostics.length > 0 ? ` (${derived.diagnostics.length})` : ''}</option>
                   </select>

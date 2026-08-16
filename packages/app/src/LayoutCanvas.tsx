@@ -92,7 +92,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination } from '@openharness/core';
+import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
 import { newInstanceId, computeDerivedModel } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
@@ -476,6 +476,145 @@ function smoothBundlePath(points: Point[]): string {
   return d;
 }
 
+/**
+ * Inline pass-through components (Connor: "make layout resistor appear in
+ * line... allow user to combine a signal that passes through a discrete
+ * component to be added into a bundle, when this happens only one bundle
+ * should appear, and the location of the discrete component can be dragged
+ * along the line"). A resistor/diode (the only true 2-terminal pass-through
+ * component types — a splice is n-ary, a terminal is single-ended, neither
+ * "passes through" between exactly two others) that touches EXACTLY two
+ * bundles is, automatically and with no extra step, rendered riding along
+ * one continuous merged line between its two real neighbours instead of as
+ * a separate node with its own two stub-ended bundle lines meeting at it —
+ * the same "automatic, not manual" placement philosophy as auto-bundle
+ * creation (layoutGrid.ts's `autoRouteInLayout`) and auto-orientation
+ * (`nodeAngles` below). Its `layoutPosition` becomes irrelevant for
+ * rendering while eligible (still there, just ignored) — position along the
+ * merged line is instead `component.custom.inlineT`, a 0..1 fraction of the
+ * line's arc length, draggable via the glyph itself. Anything with 0, 1, or
+ * 3+ bundles falls back to the ordinary node+glyph rendering untouched.
+ */
+interface InlinePassThrough {
+  component: Component;
+  bundleA: Bundle;
+  bundleB: Bundle;
+  /** The component at the far end of bundleA (the non-R end). */
+  otherA: string;
+  /** The component at the far end of bundleB (the non-R end). */
+  otherB: string;
+}
+
+function findInlinePassThroughs(doc: HarnessStore['doc']): Map<string, InlinePassThrough> {
+  const result = new Map<string, InlinePassThrough>();
+  for (const c of Object.values(doc.components)) {
+    if (c.type !== 'resistor' && c.type !== 'diode') continue;
+    const touching = Object.values(doc.bundles).filter((b) => b.sourceId === c.id || b.targetId === c.id);
+    if (touching.length !== 2) continue;
+    const [bundleA, bundleB] = touching as [Bundle, Bundle];
+    const otherA = bundleA.sourceId === c.id ? bundleA.targetId : bundleA.sourceId;
+    const otherB = bundleB.sourceId === c.id ? bundleB.targetId : bundleB.sourceId;
+    if (otherA === otherB) continue; // degenerate (both bundles loop back to the same neighbor) — keep the ordinary rendering
+    if (!doc.components[otherA]?.layoutPosition || !doc.components[otherB]?.layoutPosition) continue;
+    result.set(c.id, { component: c, bundleA, bundleB, otherA, otherB });
+  }
+  return result;
+}
+
+/** The merged line an inline pass-through component rides along — bundleA's
+ * path (reoriented so it always runs `otherA -> R`) followed directly by
+ * bundleB's path (reoriented `R -> otherB`), with R itself never appearing
+ * as a point: its own two stub attach points are dropped entirely, so
+ * bundleA's last interior waypoint connects straight through to bundleB's
+ * first one exactly as if they were always one bundle. All in px space
+ * (same convention as everything else in this file — see `toPx`). */
+function skeletonPointsFor(pair: InlinePassThrough, doc: HarnessStore['doc'], nodeGlyphs: Map<string, ConnectorGlyph>): Point[] {
+  const xComp = doc.components[pair.otherA];
+  const yComp = doc.components[pair.otherB];
+  if (!xComp?.layoutPosition || !yComp?.layoutPosition) return [];
+  const xCenter = toPx(xComp.layoutPosition);
+  const yCenter = toPx(yComp.layoutPosition);
+  const wARaw = (pair.bundleA.waypoints ?? []).map(toPx);
+  const wA = pair.bundleA.sourceId === pair.component.id ? [...wARaw].reverse() : wARaw; // now otherA -> R order
+  const wBRaw = (pair.bundleB.waypoints ?? []).map(toPx);
+  const wB = pair.bundleB.sourceId === pair.component.id ? wBRaw : [...wBRaw].reverse(); // now R -> otherB order
+  const xAimAt = wA[0] ?? wB[0] ?? yCenter;
+  const yAimAt = wB[wB.length - 1] ?? wA[wA.length - 1] ?? xCenter;
+  const xAttach = xComp.type === 'branchPoint' ? branchOutlinePoint(xCenter, xAimAt) : (nodeGlyphs.get(xComp.id)?.stubEnd ?? xCenter);
+  const yAttach = yComp.type === 'branchPoint' ? branchOutlinePoint(yCenter, yAimAt) : (nodeGlyphs.get(yComp.id)?.stubEnd ?? yCenter);
+  return [xAttach, ...wA, ...wB, yAttach];
+}
+
+/** Stored 0..1 fraction of the skeleton's arc length an inline pass-through
+ * component currently sits at — reuses the component's existing free-form
+ * `custom` bag (spec §4.2's per-component escape hatch) rather than adding
+ * a dedicated schema field, since this value is meaningless outside the
+ * "currently eligible for inline rendering" state and has no business being
+ * a first-class part of the document model. Defaults to the midpoint. */
+function getInlineT(c: Component): number {
+  const v = c.custom['inlineT'];
+  return typeof v === 'number' && v >= 0 && v <= 1 ? v : 0.5;
+}
+
+/** Point + tangent angle at arc-length fraction `t` (0..1) along a polyline. */
+function pointAtFraction(points: Point[], t: number): { point: Point; angle: number } {
+  if (points.length === 0) return { point: { x: 0, y: 0 }, angle: 0 };
+  if (points.length === 1) return { point: points[0]!, angle: 0 };
+  const segLens: number[] = [];
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const d = Math.hypot(points[i + 1]!.x - points[i]!.x, points[i + 1]!.y - points[i]!.y);
+    segLens.push(d);
+    total += d;
+  }
+  let target = Math.max(0, Math.min(1, t)) * total;
+  for (let i = 0; i < segLens.length; i++) {
+    const len = segLens[i]!;
+    if (target <= len || i === segLens.length - 1) {
+      const frac = len > 0 ? target / len : 0;
+      const a = points[i]!;
+      const b = points[i + 1]!;
+      return { point: { x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac }, angle: Math.atan2(b.y - a.y, b.x - a.x) };
+    }
+    target -= len;
+  }
+  return { point: points[points.length - 1]!, angle: 0 };
+}
+
+/** Arc-length fraction (0..1) of the point on `points` closest to `p` — the
+ * inverse of `pointAtFraction`, used while dragging an inline component to
+ * turn a raw cursor position back into a stored `inlineT`. */
+function fractionAtClosestPoint(points: Point[], p: Point): number {
+  if (points.length < 2) return 0.5;
+  const segLens: number[] = [];
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const d = Math.hypot(points[i + 1]!.x - points[i]!.x, points[i + 1]!.y - points[i]!.y);
+    segLens.push(d);
+    total += d;
+  }
+  let bestDistSq = Infinity;
+  let bestT = 0.5;
+  let cumulative = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    const segT = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+    const projX = a.x + segT * dx;
+    const projY = a.y + segT * dy;
+    const distSq = (p.x - projX) ** 2 + (p.y - projY) ** 2;
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq;
+      bestT = total > 0 ? (cumulative + segT * segLens[i]!) / total : 0;
+    }
+    cumulative += segLens[i]!;
+  }
+  return bestT;
+}
+
 interface Props {
   store: HarnessStore;
   hoveredComponentId?: string | null;
@@ -497,6 +636,7 @@ export function LayoutCanvas({
   const [selected, setSelected] = useState<Selection>(null);
   const [dragging, setDragging] = useState<Dragging | null>(null);
   const [draggingWaypoint, setDraggingWaypoint] = useState<DraggingWaypoint | null>(null);
+  const [draggingInline, setDraggingInline] = useState<{ componentId: string } | null>(null);
   const [pendingBundleFrom, setPendingBundleFrom] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -513,6 +653,16 @@ export function LayoutCanvas({
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
     return toMm({ x: clientX - rect.left, y: clientY - rect.top });
+  }, []);
+
+  /** Same as `clientToMm`, but in px (this file's on-screen SVG space) —
+   * needed for dragging an inline pass-through component, since its
+   * position is a fraction along a px-space skeleton polyline rather than
+   * an mm-space document coordinate. */
+  const clientToPx = useCallback((clientX: number, clientY: number): Point => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return { x: clientX - rect.left, y: clientY - rect.top };
   }, []);
 
   const wiresThroughComponent = useCallback(
@@ -584,6 +734,16 @@ export function LayoutCanvas({
     }
     return glyphs;
   }, [placed, nodeAngles]);
+
+  // Inline pass-through components (see findInlinePassThroughs' doc
+  // comment) — computed from `doc` directly (not `placed`/`nodeGlyphs`)
+  // since eligibility only depends on bundle topology, not orientation.
+  const inlinePassThroughs = useMemo(() => findInlinePassThroughs(doc), [doc]);
+  const absorbedBundleIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const pair of inlinePassThroughs.values()) { ids.add(pair.bundleA.id); ids.add(pair.bundleB.id); }
+    return ids;
+  }, [inlinePassThroughs]);
 
   const addBranchPoint = useCallback(() => {
     const pos = nextLayoutGrid(store);
@@ -665,11 +825,27 @@ export function LayoutCanvas({
           const b = draft.bundles[draggingWaypoint.bundleId];
           if (b?.waypoints?.[draggingWaypoint.index]) b.waypoints[draggingWaypoint.index] = { x, y };
         });
+      } else if (draggingInline) {
+        // Dragging an inline pass-through component (Connor: "the location
+        // of the discrete component can be dragged along the line") —
+        // project the cursor onto its current skeleton and store the
+        // resulting arc-length fraction, rather than a raw x/y (there's no
+        // x/y to move; the component doesn't have its own attach points
+        // while it's inline, see findInlinePassThroughs' doc comment).
+        const pair = inlinePassThroughs.get(draggingInline.componentId);
+        if (pair) {
+          const skeleton = skeletonPointsFor(pair, doc, nodeGlyphs);
+          const t = fractionAtClosestPoint(skeleton, clientToPx(e.clientX, e.clientY));
+          store.transact('Move inline component', (draft) => {
+            const c = draft.components[draggingInline.componentId];
+            if (c) c.custom['inlineT'] = t;
+          });
+        }
       }
     },
-    [dragging, draggingWaypoint, store],
+    [dragging, draggingWaypoint, draggingInline, store, inlinePassThroughs, doc, nodeGlyphs, clientToPx],
   );
-  const onMouseUp = useCallback(() => { setDragging(null); setDraggingWaypoint(null); }, []);
+  const onMouseUp = useCallback(() => { setDragging(null); setDraggingWaypoint(null); setDraggingInline(null); }, []);
 
   /** Grabbing a bundle's own line (not an existing waypoint handle) inserts
    * a new routing node at the click position, in the correct spot along the
@@ -741,10 +917,34 @@ export function LayoutCanvas({
     [store],
   );
 
+  /** Per-segment authored length (Connor: "dimensions between each routing
+   * point should be able to be recorded, every single point") — see
+   * `bundleAuthoredLength` in core/derive/bundleLength.ts for how this and
+   * the whole-bundle `length` field above reconcile when both are present. */
+  const setSegmentLength = useCallback(
+    (bundleId: string, index: number, mm: number | undefined) => {
+      store.transact('Edit segment length', (draft) => {
+        const b = draft.bundles[bundleId];
+        if (!b) return;
+        const expected = (b.waypoints?.length ?? 0) + 1;
+        if (!b.segmentLengths || b.segmentLengths.length !== expected) {
+          b.segmentLengths = Array.from({ length: expected }, () => undefined);
+        }
+        b.segmentLengths[index] = mm;
+      });
+    },
+    [store],
+  );
+
   const maxX = Math.max(500, ...placed.map((c) => toPx(c.layoutPosition!).x + HOVER_R + 140));
   const maxY = Math.max(360, ...placed.map((c) => toPx(c.layoutPosition!).y + HOVER_R + 100));
 
-  const selectedComponent = selected?.kind === 'component' ? doc.components[selected.id] : undefined;
+  // Inline pass-through components don't have their own position card — see
+  // findInlinePassThroughs' doc comment; their `layoutPosition` field is
+  // vestigial while eligible, and "Remove from layout" wouldn't remove
+  // anything meaningful (removing from the *line* means deleting one of the
+  // two bundles, not clearing an unused x/y).
+  const selectedComponent = selected?.kind === 'component' && !inlinePassThroughs.has(selected.id) ? doc.components[selected.id] : undefined;
   const selectedBundle = selected?.kind === 'bundle' ? doc.bundles[selected.id] : undefined;
 
   return (
@@ -788,6 +988,10 @@ export function LayoutCanvas({
               <rect x={0} y={0} width={maxX} height={maxY} fill="url(#layout-dot-grid)" />
 
               {Object.values(doc.bundles).map((b) => {
+                // Skip bundles absorbed into a merged inline pass-through
+                // line (rendered separately, below the node loop) —
+                // drawing them here too would duplicate the line.
+                if (absorbedBundleIds.has(b.id)) return null;
                 const a = doc.components[b.sourceId];
                 const t = doc.components[b.targetId];
                 if (!a?.layoutPosition || !t?.layoutPosition) return null;
@@ -857,8 +1061,65 @@ export function LayoutCanvas({
                 );
               })}
 
+              {/* Inline pass-through components (Connor: "make layout
+                 resistor appear in line... only one bundle should appear,
+                 and the location of the discrete component can be dragged
+                 along the line") — see findInlinePassThroughs' doc comment.
+                 One merged flowy line (smoothBundlePath, same Catmull-Rom
+                 curve every other bundle line uses) from the component's
+                 real neighbor on one side, through its own two bundles'
+                 waypoints with no gap at the old junction point, to its
+                 real neighbor on the other side — with the resistor/diode
+                 glyph riding at its stored arc-length fraction, oriented to
+                 the line's own tangent there. */}
+              {[...inlinePassThroughs.values()].map((pair) => {
+                const skeleton = skeletonPointsFor(pair, doc, nodeGlyphs);
+                if (skeleton.length < 2) return null;
+                const t = getInlineT(pair.component);
+                const { point: glyphCenter, angle } = pointAtFraction(skeleton, t);
+                const glyph = physicalGlyph(pair.component, glyphCenter, angle);
+                const pathD = smoothBundlePath(skeleton);
+                const isSelected = selected?.kind === 'component' && selected.id === pair.component.id;
+                const isHovered = hoveredComponentId === pair.component.id;
+                const wireIds = [...(derived.bundleContents.get(pair.bundleA.id) ?? []), ...(derived.bundleContents.get(pair.bundleB.id) ?? [])];
+                const signalNames = bundleSignalTooltip(wireIds, doc);
+                const strokeColor = isSelected ? theme.color.accent : theme.color.textFaint;
+                return (
+                  <g
+                    key={pair.component.id}
+                    onMouseEnter={() => onHoverComponent?.(pair.component.id)}
+                    onMouseLeave={() => onHoverComponent?.(null)}
+                  >
+                    <path d={pathD} fill="none" stroke="transparent" strokeWidth={14} style={{ cursor: 'default' }}>
+                      <title>{`${pair.component.refdes} inline on ${pair.bundleA.refdes}/${pair.bundleB.refdes} — ${signalNames}`}</title>
+                    </path>
+                    <path d={pathD} fill="none" stroke={strokeColor} strokeWidth={isSelected ? 3 : 2} strokeLinecap="round" style={{ pointerEvents: 'none' }} />
+                    {isHovered && !isSelected && (
+                      <circle cx={glyphCenter.x} cy={glyphCenter.y} r={HOVER_R} fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3" style={{ pointerEvents: 'none' }} />
+                    )}
+                    <g
+                      onMouseDown={(e) => { e.stopPropagation(); setSelected({ kind: 'component', id: pair.component.id }); setDraggingInline({ componentId: pair.component.id }); }}
+                      style={{ cursor: 'grab' }}
+                    >
+                      <circle cx={glyphCenter.x} cy={glyphCenter.y} r={HOVER_R * 0.6} fill="transparent" />
+                      <polygon points={glyph.bodyPoly} fill={theme.color.nodeFill} stroke={strokeColor} strokeWidth={isSelected ? 2 : 1} />
+                      {glyph.decorations.map((d, i) =>
+                        d.kind === 'line' ? (
+                          <line key={i} x1={d.x1} y1={d.y1} x2={d.x2} y2={d.y2} stroke={strokeColor} strokeWidth={isSelected ? 2 : 1.3} />
+                        ) : (
+                          <circle key={i} cx={d.cx} cy={d.cy} r={d.r} fill={d.filled ? strokeColor : theme.color.nodeFill} stroke={strokeColor} strokeWidth={isSelected ? 2 : 1} />
+                        ),
+                      )}
+                    </g>
+                    <text x={glyphCenter.x} y={glyphCenter.y - 14} textAnchor="middle" fontSize={10.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
+                      {pair.component.refdes}
+                    </text>
+                  </g>
+                );
+              })}
+
               {placed.map((c) => {
-                if (!c.layoutPosition) return null;
+                if (!c.layoutPosition || inlinePassThroughs.has(c.id)) return null;
                 const center = toPx(c.layoutPosition);
                 const isSelected = selected?.kind === 'component' && selected.id === c.id;
                 const isPendingFrom = pendingBundleFrom === c.id;
@@ -1030,8 +1291,10 @@ export function LayoutCanvas({
               <BundleInspector
                 bundle={selectedBundle}
                 onSetLength={(mm) => setBundleLength(selectedBundle.id, mm)}
+                onSetSegmentLength={(i, mm) => setSegmentLength(selectedBundle.id, i, mm)}
                 onDelete={() => deleteBundle(selectedBundle.id)}
                 onClearRoutingNodes={() => store.transact('Clear routing nodes', (draft) => { const b = draft.bundles[selectedBundle.id]; if (b) b.waypoints = []; })}
+                onClose={() => setSelected(null)}
               />
             )}
           </div>
@@ -1062,19 +1325,23 @@ export function LayoutCanvas({
 }
 
 function BundleInspector({
-  bundle, onSetLength, onDelete, onClearRoutingNodes,
+  bundle, onSetLength, onSetSegmentLength, onDelete, onClearRoutingNodes, onClose,
 }: {
-  bundle: { id: string; refdes: string; length?: number; waypoints?: Point[] };
+  bundle: { id: string; refdes: string; length?: number; waypoints?: Point[]; segmentLengths?: (number | undefined)[] };
   onSetLength: (mm: number | undefined) => void;
+  onSetSegmentLength: (index: number, mm: number | undefined) => void;
   onDelete: () => void;
   onClearRoutingNodes: () => void;
+  onClose: () => void;
 }) {
   const nodeCount = bundle.waypoints?.length ?? 0;
+  const segmentCount = nodeCount + 1;
   return (
     <div style={{ position: 'absolute', left: 20, top: 20, zIndex: 3 }}>
       <div style={s.card}>
         <div style={s.cardHeader}>
           <span style={s.cardTitle}>{bundle.refdes}</span>
+          <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
         </div>
         <div style={s.cardBody}>
           <label style={s.fieldLabel}>Authored length (mm)</label>
@@ -1088,6 +1355,29 @@ function BundleInspector({
               <span style={s.kvKey}>Routing nodes</span>
               <button style={s.linkBtn} onClick={onClearRoutingNodes}>{nodeCount} — clear</button>
             </div>
+          )}
+          {/* Per-segment recorded lengths (Connor: "dimensions between each
+             routing point should be able to be recorded, every single
+             point, but the layout can be assumed to be not to scale") —
+             only worth showing once there's more than one segment; a
+             bundle with no routing nodes has exactly one segment, which is
+             just the whole-bundle field above. */}
+          {segmentCount > 1 && (
+            <>
+              <label style={s.fieldLabel}>Segment lengths (mm)</label>
+              <div style={s.segmentList}>
+                {Array.from({ length: segmentCount }, (_, i) => (
+                  <div key={i} style={s.segmentRow}>
+                    <span style={s.segmentTag}>{i === 0 ? 'start' : i} → {i === segmentCount - 1 ? 'end' : i + 1}</span>
+                    <input
+                      style={s.segmentInput} type="number" step="1" placeholder="—"
+                      value={bundle.segmentLengths?.[i] ?? ''}
+                      onChange={(e) => { const v = e.target.value; onSetSegmentLength(i, v === '' ? undefined : Number(v)); }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
           )}
           <button style={s.dangerBtn} onClick={onDelete}>Delete bundle</button>
         </div>
@@ -1126,7 +1416,18 @@ const s = {
 
   card: { width: 220, background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.panel, boxShadow: '0 8px 24px rgba(16,24,40,0.12), 0 1px 3px rgba(16,24,40,0.08)', overflow: 'hidden' },
   cardHeader: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${theme.color.border}`, color: theme.color.textMuted },
-  cardTitle: { fontSize: 13, fontWeight: 600, color: theme.color.textStrong },
+  cardTitle: { fontSize: 13, fontWeight: 600, color: theme.color.textStrong, flex: 1 },
+  closeBtn: {
+    border: 'none', background: 'transparent', color: theme.color.textFaint, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, padding: '0 2px', flexShrink: 0,
+  },
+  segmentList: { display: 'flex', flexDirection: 'column', gap: 4 },
+  segmentRow: { display: 'flex', alignItems: 'center', gap: 6 },
+  segmentTag: { fontSize: 10.5, color: theme.color.textFaint, flex: 1 },
+  segmentInput: {
+    width: 64, padding: '4px 6px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control,
+    fontSize: 11.5, background: theme.color.surface, color: theme.color.textStrong, boxSizing: 'border-box',
+  },
   cardBody: { padding: 12, display: 'flex', flexDirection: 'column', gap: 6 },
   kvRow: { display: 'flex', justifyContent: 'space-between', fontSize: 12.5 },
   kvKey: { color: theme.color.textFaint },

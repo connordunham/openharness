@@ -16,4 +16,5 @@ export * from './vendorRawFormat.js';
 export * from './importVendorJson.js';
 export * from './ohdFormat.js';
 export * from './bomCsv.js';
+export * from './interconnectCsv.js';
 export * from './diagnosticsFormat.js';

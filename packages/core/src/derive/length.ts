@@ -19,6 +19,7 @@
 import type { HarnessDocument, RouteResult, LengthResult, LengthResultSegment } from '../types.js';
 import type { WireId } from '../ids.js';
 import { toMicrometres } from '../units.js';
+import { bundleAuthoredLength } from './bundleLength.js';
 
 export function computeLengths(
   doc: HarnessDocument,
@@ -36,8 +37,8 @@ export function computeLengths(
 
     const segments: LengthResultSegment[] = route.segments.map((bundleId) => {
       const bundle = doc.bundles[bundleId];
-      const authored = bundle?.length !== undefined;
-      const value = authored ? toMicrometres(bundle!.length!, 'mm') : 0; // bundle.length authored in mm (spec §6.3)
+      const { valueMm, authored } = bundle ? bundleAuthoredLength(bundle) : { valueMm: 0, authored: false };
+      const value = valueMm > 0 || authored ? toMicrometres(valueMm, 'mm') : 0; // authored in mm (spec §6.3)
       return { bundleId, length: value, authored };
     });
 
