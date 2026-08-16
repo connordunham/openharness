@@ -84,7 +84,7 @@ interface Dragging {
 interface ContextMenuState {
   x: number;
   y: number;
-  target: { kind: 'component' | 'wire' | 'group'; id: string };
+  target: { kind: 'component' | 'wire' | 'group' | 'note'; id: string };
 }
 
 const SPLICE_KINDS: SpliceKind[] = ['crimp', 'weld', 'solderSleeve'];
@@ -127,6 +127,44 @@ function parseKey(key: string): { kind: 'wire' | 'group'; id: string } | null {
   const kind = key.slice(0, i);
   if (kind !== 'wire' && kind !== 'group') return null;
   return { kind, id: key.slice(i + 1) };
+}
+
+/** Twisted-pair visual (Connor: "if wires are grouped as a twisted pair,
+ * show a wire twist visual in the schematic" — the halo alone looked
+ * identical for `kind: 'twist'` and `kind: 'cable'` groups, no way to tell
+ * a twisted pair from a plain bundled cable at a glance). Walks the
+ * representative member's already-computed routed polyline and emits a
+ * short perpendicular tick every `spacing` px, alternating sides — the
+ * classic schematic "twisted lace" cue — without needing path-length DOM
+ * queries, since it works directly off the same point array the router
+ * already produced. */
+function twistTickPaths(points: Point[], spacing = 12, tickLen = 5): string[] {
+  if (points.length < 2) return [];
+  const ticks: string[] = [];
+  let carry = spacing / 2; // half-offset so ticks don't bunch right at corners
+  let side = 1;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) continue;
+    const ux = dx / len;
+    const uy = dy / len;
+    const px = -uy;
+    const py = ux;
+    let d = carry;
+    while (d < len) {
+      const cx = a.x + ux * d;
+      const cy = a.y + uy * d;
+      ticks.push(`M ${cx - px * tickLen * side} ${cy - py * tickLen * side} L ${cx + px * tickLen * side} ${cy + py * tickLen * side}`);
+      side = -side;
+      d += spacing;
+    }
+    carry = d - len;
+  }
+  return ticks;
 }
 
 function rowEndpoint(node: SceneNode, row: SceneRow): Endpoint {
@@ -210,6 +248,15 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
   const [inspectorTab, setInspectorTab] = useState<'edit' | 'properties'>('edit');
   const [editingCavity, setEditingCavity] = useState<{ componentId: string; cavityId: string } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // Connor's follow-up: "I don't like the drop down menus that appear upon
+  // a click... almost no drop down menu needed unless the user right
+  // clicks." Plain click now only selects/highlights (see `select()`); the
+  // full property card (ComponentInspector/WireInspector/GroupInspector/
+  // note editor) only opens when this is explicitly set true, which only
+  // happens for (a) right-click -> "Edit" in the context menu, or (b) right
+  // after creating a new part via the toolbar, where showing the editor
+  // immediately is the whole point of clicking "Add".
+  const [inspectorOpen, setInspectorOpen] = useState(false);
 
   const scene = computeSchematicScene(store.doc);
   const selectedComponent = selected?.kind === 'component' ? store.doc.components[selected.id] : undefined;
@@ -240,6 +287,17 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
     setMultiSelect(new Set());
     setInspectorTab('edit');
     setContextMenu(null);
+    setInspectorOpen(false);
+  }, []);
+
+  /** Like `select`, but also opens the full property card — used only for
+   * the explicit "just added this" and "right-click -> Edit" flows. */
+  const selectAndEdit = useCallback((sel: Selection) => {
+    setSelected(sel);
+    setMultiSelect(new Set());
+    setInspectorTab('edit');
+    setContextMenu(null);
+    setInspectorOpen(true);
   }, []);
 
   const addConnector = useCallback(() => {
@@ -259,8 +317,8 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
         custom: {},
       };
     });
-    select({ kind: 'component', id: newId });
-  }, [store, select]);
+    selectAndEdit({ kind: 'component', id: newId });
+  }, [store, selectAndEdit]);
 
   const addSplice = useCallback(() => {
     const pos = nextGridPosition(store);
@@ -271,8 +329,8 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       const refdes = nextRefdes(store, draft.settings.refdesPrefixes.splice ?? 'S', 'splice');
       draft.components[id] = { id, type: 'splice', refdes, spliceKind: 'crimp', schematicPosition: pos, custom: {} };
     });
-    select({ kind: 'component', id: newId });
-  }, [store, select]);
+    selectAndEdit({ kind: 'component', id: newId });
+  }, [store, selectAndEdit]);
 
   const addTerminal = useCallback(() => {
     const pos = nextGridPosition(store);
@@ -283,8 +341,8 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       const refdes = nextRefdes(store, draft.settings.refdesPrefixes.terminal ?? 'T', 'terminal');
       draft.components[id] = { id, type: 'terminal', refdes, terminalKind: 'ferrule', schematicPosition: pos, custom: {} };
     });
-    select({ kind: 'component', id: newId });
-  }, [store, select]);
+    selectAndEdit({ kind: 'component', id: newId });
+  }, [store, selectAndEdit]);
 
   const addTwoTerminal = useCallback((type: 'resistor' | 'diode') => {
     const pos = nextGridPosition(store);
@@ -295,8 +353,8 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       const refdes = nextRefdes(store, draft.settings.refdesPrefixes[type] ?? (type === 'resistor' ? 'R' : 'D'), type);
       draft.components[id] = { id, type, refdes, schematicPosition: pos, custom: {} };
     });
-    select({ kind: 'component', id: newId });
-  }, [store, select]);
+    selectAndEdit({ kind: 'component', id: newId });
+  }, [store, selectAndEdit]);
 
   const addNote = useCallback(() => {
     const pos = nextGridPosition(store);
@@ -306,8 +364,8 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       newId = id;
       draft.notes[id] = { id, schematicPosition: pos, text: 'Note' };
     });
-    select({ kind: 'note', id: newId });
-  }, [store, select]);
+    selectAndEdit({ kind: 'note', id: newId });
+  }, [store, selectAndEdit]);
 
   const duplicateComponent = useCallback(
     (componentId: string) => {
@@ -334,9 +392,9 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
         }
         draft.components[id] = clone;
       });
-      select({ kind: 'component', id: newId });
+      selectAndEdit({ kind: 'component', id: newId });
     },
-    [store, select],
+    [store, selectAndEdit],
   );
 
   const onRowClick = useCallback(
@@ -398,6 +456,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       setMultiSelect(new Set());
       setSelected({ kind: 'wire', id: wireId });
       setInspectorTab('edit');
+      setInspectorOpen(false);
     },
     [seedMultiSelectFromSingle],
   );
@@ -419,12 +478,13 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       setMultiSelect(new Set());
       setSelected({ kind: 'group', id: groupId });
       setInspectorTab('edit');
+      setInspectorOpen(false);
     },
     [seedMultiSelectFromSingle],
   );
 
   const groupSelection = useCallback(() => {
-    if (multiSelect.size < 2) return;
+    if (multiSelect.size < 1) return;
     const wireIds: string[] = [];
     const groupIds: string[] = [];
     for (const key of multiSelect) {
@@ -433,12 +493,18 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       if (parsed.kind === 'wire') wireIds.push(parsed.id);
       else groupIds.push(parsed.id);
     }
+    // A twist only means something for 2+ conductors — a lone wire can't
+    // twist around itself. Grouping just one wire defaults to `kind:
+    // 'cable'` instead, which is exactly the shape a single shielded
+    // conductor (coax-style) needs (Connor: "allow single wires to be
+    // grouped into a part but not twisted" — for the shield feature).
+    const totalMembers = wireIds.length + groupIds.length;
     let newId = '';
     store.transact('Group wires', (draft) => {
       const id = newInstanceId();
       newId = id;
       const group: WireGroup = {
-        id, kind: 'twist', memberWireIds: wireIds, memberGroupIds: groupIds, custom: {},
+        id, kind: totalMembers >= 2 ? 'twist' : 'cable', memberWireIds: wireIds, memberGroupIds: groupIds, custom: {},
       };
       draft.wireGroups[id] = group;
       for (const wid of wireIds) {
@@ -448,7 +514,28 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
     });
     setMultiSelect(new Set());
     setSelected({ kind: 'group', id: newId });
+    setInspectorOpen(true);
   }, [multiSelect, store]);
+
+  /** Direct entry point for wrapping a single already-selected wire in its
+   * own `kind: 'cable'` group, from the WireInspector's "Group this wire"
+   * button — the discoverable path to single-wire grouping, since a plain
+   * click never touches `multiSelect` (only shift-click does). */
+  const groupSingleWire = useCallback(
+    (wireId: string) => {
+      let newId = '';
+      store.transact('Group wire', (draft) => {
+        const id = newInstanceId();
+        newId = id;
+        draft.wireGroups[id] = { id, kind: 'cable', memberWireIds: [wireId], memberGroupIds: [], custom: {} };
+        const w = draft.wires[wireId];
+        if (w) w.twistGroupId = id;
+      });
+      setSelected({ kind: 'group', id: newId });
+      setInspectorOpen(true);
+    },
+    [store],
+  );
 
   const ungroupWires = useCallback(
     (groupId: string) => {
@@ -506,6 +593,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
     e.stopPropagation();
     setMultiSelect(new Set());
     setSelected({ kind: 'wire', id: wireId });
+    setInspectorOpen(false);
     setContextMenu({ x: e.clientX, y: e.clientY, target: { kind: 'wire', id: wireId } });
   }, []);
 
@@ -514,7 +602,17 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
     e.stopPropagation();
     setMultiSelect(new Set());
     setSelected({ kind: 'group', id: groupId });
+    setInspectorOpen(false);
     setContextMenu({ x: e.clientX, y: e.clientY, target: { kind: 'group', id: groupId } });
+  }, []);
+
+  const onNoteContextMenu = useCallback((noteId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMultiSelect(new Set());
+    setInspectorOpen(false);
+    setSelected({ kind: 'note', id: noteId });
+    setContextMenu({ x: e.clientX, y: e.clientY, target: { kind: 'note', id: noteId } });
   }, []);
 
   const onNoteMouseDown = useCallback(
@@ -576,6 +674,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       setMultiSelect(new Set());
       setSelected({ kind: 'wire', id: wire.wireId });
       setInspectorTab('edit');
+      setInspectorOpen(false);
       const start = wire.manualWaypoint ?? wire.midpoint;
       setDragging({ kind: 'wire', id: wire.wireId, pointerStartX: e.clientX, pointerStartY: e.clientY, boxStartX: start.x, boxStartY: start.y });
     },
@@ -646,9 +745,12 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
 
   // Centroid of the current multi-selection, so the floating "Group" action
   // button appears roughly where the selected traces are, not pinned to a
-  // fixed corner.
+  // fixed corner. Single-wire selections can be grouped too (Connor:
+  // "allow single wires to be grouped into a part but not twisted") — a
+  // lone wire wrapped in a `kind: 'cable'` group is exactly the shape a
+  // coax-style single-conductor shield needs (see groupSelection below).
   let groupBtnPos: Point | null = null;
-  if (multiSelect.size >= 2) {
+  if (multiSelect.size >= 1) {
     let sx = 0, sy = 0, n = 0;
     for (const key of multiSelect) {
       const parsed = parseKey(key);
@@ -679,8 +781,11 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
         {pendingWire && (
           <span style={s.wireHint}>Click a port to finish the wire, or click it again to cancel.</span>
         )}
-        {multiSelect.size >= 2 && (
-          <span style={s.wireHint}>{multiSelect.size} selected — click "Group" on the canvas, or shift-click to adjust.</span>
+        {multiSelect.size >= 1 && (
+          <span style={s.wireHint}>
+            {multiSelect.size} selected — click "Group" on the canvas
+            {multiSelect.size === 1 ? ' to wrap it (e.g. for a shield)' : ''}, or shift-click to adjust.
+          </span>
         )}
       </div>
       <div style={s.canvasScroll} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
@@ -719,21 +824,32 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
               const group = store.doc.wireGroups[groupId];
               const isSelected = selected?.kind === 'group' && selected.id === groupId;
               const isMulti = multiSelect.has(groupKey(groupId));
+              const haloColor = isSelected || isMulti ? theme.color.accent : theme.color.textFaint;
+              const isTwist = group?.kind === 'twist';
               return (
-                <path
-                  key={`halo:${groupId}`}
-                  d={rep.path}
-                  fill="none"
-                  stroke={isSelected || isMulti ? theme.color.accent : theme.color.textFaint}
-                  strokeOpacity={isSelected || isMulti ? 0.35 : 0.22}
-                  strokeWidth={members.length > 1 ? 10 : 8}
-                  strokeLinecap="round"
-                  style={{ cursor: 'pointer' }}
-                  onClick={(e) => onGroupHaloClick(groupId, e)}
-                  onContextMenu={(e) => onGroupContextMenu(groupId, e)}
-                >
-                  <title>{group?.kind === 'cable' ? `Cable ${group.refdes ?? ''}` : 'Twisted group'} ({members.length} wire{members.length === 1 ? '' : 's'})</title>
-                </path>
+                <g key={`halo:${groupId}`}>
+                  <path
+                    d={rep.path}
+                    fill="none"
+                    stroke={haloColor}
+                    strokeOpacity={isSelected || isMulti ? 0.35 : 0.22}
+                    strokeWidth={members.length > 1 ? 10 : 8}
+                    strokeLinecap="round"
+                    style={{ cursor: 'pointer' }}
+                    onClick={(e) => onGroupHaloClick(groupId, e)}
+                    onContextMenu={(e) => onGroupContextMenu(groupId, e)}
+                  >
+                    <title>{group?.kind === 'cable' ? `Cable ${group.refdes ?? ''}` : 'Twisted pair'} ({members.length} wire{members.length === 1 ? '' : 's'})</title>
+                  </path>
+                  {isTwist && twistTickPaths(rep.routePoints).map((d, i) => (
+                    <path
+                      key={i} d={d}
+                      stroke={isSelected || isMulti ? theme.color.accent : theme.color.textMuted}
+                      strokeOpacity={0.8} strokeWidth={1.3} strokeLinecap="round"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  ))}
+                </g>
               );
             })}
 
@@ -801,6 +917,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
                     strokeWidth={isSelected ? 2 : 1}
                     style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
                     onMouseDown={(e) => onNoteMouseDown(note.noteId, note.point.x, note.point.y, e)}
+                    onContextMenu={(e) => onNoteContextMenu(note.noteId, e)}
                   />
                   <foreignObject x={note.point.x + 8} y={note.point.y + 6} width={width - 16} height={height - 12} style={{ pointerEvents: 'none' }}>
                     <div style={s.noteText}>{note.text}</div>
@@ -876,13 +993,13 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
                             y={labelY}
                             fontSize={11} fill={theme.color.textMuted}
                             style={{ cursor: isConnector ? 'text' : 'default' }}
-                            onDoubleClick={(e) => {
+                            onClick={(e) => {
                               if (!isConnector) return;
                               e.stopPropagation();
                               setEditingCavity({ componentId: node.componentId, cavityId: row.rowId });
                             }}
                           >
-                            {row.label}{row.signal ? `  ·  ${row.signal}` : isConnector ? '  ·  (double-click to name)' : ''}
+                            {row.label}{row.signal ? `  ·  ${row.signal}` : isConnector ? '  ·  (click to name)' : ''}
                           </text>
                         )}
                         <circle
@@ -918,24 +1035,28 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
                   node={selectedNode}
                 />
               )}
-              <div style={{ position: 'absolute', left: selectedNode.x, top: selectedNode.y + selectedNode.height + 10, zIndex: 2 }}>
-                <ComponentInspector
-                  store={store}
-                  component={selectedComponent}
-                  tab={inspectorTab}
-                  onTabChange={setInspectorTab}
-                  onDelete={deleteSelected}
-                />
-              </div>
+              {inspectorOpen && (
+                <div style={{ position: 'absolute', left: selectedNode.x, top: selectedNode.y + selectedNode.height + 10, zIndex: 2 }}>
+                  <ComponentInspector
+                    store={store}
+                    component={selectedComponent}
+                    tab={inspectorTab}
+                    onTabChange={setInspectorTab}
+                    onDelete={deleteSelected}
+                    onClose={() => setInspectorOpen(false)}
+                  />
+                </div>
+              )}
             </>
           )}
 
-          {selectedNote && selectedSceneNote && (
+          {selectedNote && selectedSceneNote && inspectorOpen && (
             <div style={{ position: 'absolute', left: selectedSceneNote.point.x, top: selectedSceneNote.point.y + 64, zIndex: 2 }}>
               <div style={s.card}>
                 <div style={s.cardHeader}>
                   <ComponentIcon type="note" />
                   <span style={s.cardTitle}>Note</span>
+                  <button style={s.closeBtn} onClick={() => setInspectorOpen(false)} title="Close">×</button>
                 </div>
                 <div style={s.cardBody}>
                   <textarea
@@ -956,22 +1077,28 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
             </div>
           )}
 
-          {selectedWire && selected?.kind === 'wire' && (
+          {selectedWire && selected?.kind === 'wire' && inspectorOpen && (
             <div style={{ position: 'absolute', left: selectedWire.midpoint.x, top: selectedWire.midpoint.y + 14, zIndex: 3 }}>
               <WireInspector
                 store={store}
                 wire={selectedWire}
                 onDelete={deleteSelected}
+                onClose={() => setInspectorOpen(false)}
                 onUngroupWire={
                   store.doc.wires[selectedWire.wireId]?.twistGroupId
                     ? () => removeWireFromGroup(store.doc.wires[selectedWire.wireId]!.twistGroupId!, selectedWire.wireId)
                     : undefined
                 }
+                onGroupAlone={
+                  store.doc.wires[selectedWire.wireId]?.twistGroupId
+                    ? undefined
+                    : () => groupSingleWire(selectedWire.wireId)
+                }
               />
             </div>
           )}
 
-          {selectedGroup && selected?.kind === 'group' && (
+          {selectedGroup && selected?.kind === 'group' && inspectorOpen && (
             <div
               style={{
                 position: 'absolute',
@@ -986,6 +1113,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
                 memberWires={wiresByGroup.get(selectedGroup.id) ?? []}
                 onUngroup={() => ungroupWires(selectedGroup.id)}
                 onRemoveMember={(wid) => removeWireFromGroup(selectedGroup.id, wid)}
+                onClose={() => setInspectorOpen(false)}
               />
             </div>
           )}
@@ -995,6 +1123,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
               state={contextMenu}
               store={store}
               onClose={() => setContextMenu(null)}
+              onEdit={() => setInspectorOpen(true)}
               onDuplicate={duplicateComponent}
               onDelete={deleteSelected}
               onUngroupWire={removeWireFromGroup}
@@ -1086,13 +1215,14 @@ function CavityStepper({ store, connector, node }: { store: HarnessStore; connec
 }
 
 function ComponentInspector({
-  store, component, tab, onTabChange, onDelete,
+  store, component, tab, onTabChange, onDelete, onClose,
 }: {
   store: HarnessStore;
   component: Component;
   tab: 'edit' | 'properties';
   onTabChange: (t: 'edit' | 'properties') => void;
   onDelete: () => void;
+  onClose: () => void;
 }) {
   return (
     <div style={s.card}>
@@ -1123,6 +1253,7 @@ function ComponentInspector({
             »
           </button>
         )}
+        <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
       </div>
 
       {component.type === 'connector' && (
@@ -1275,12 +1406,14 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
  * swatch pickers over the same auto-assigned palette; part/gauge/refdes are
  * plain fields since there's no standalone parts-library browser yet. */
 function WireInspector({
-  store, wire, onDelete, onUngroupWire,
+  store, wire, onDelete, onUngroupWire, onGroupAlone, onClose,
 }: {
   store: HarnessStore;
   wire: SceneWire;
   onDelete: () => void;
   onUngroupWire?: () => void;
+  onGroupAlone?: () => void;
+  onClose: () => void;
 }) {
   const docWire = store.doc.wires[wire.wireId];
   if (!docWire) return null;
@@ -1326,6 +1459,7 @@ function WireInspector({
             });
           }}
         />
+        <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
       </div>
       <div style={s.cardBody}>
         <label style={s.fieldLabel}>Color</label>
@@ -1373,6 +1507,11 @@ function WireInspector({
         {onUngroupWire && (
           <button style={s.addRowBtn} onClick={onUngroupWire}>Remove from group</button>
         )}
+        {onGroupAlone && (
+          <button style={s.addRowBtn} onClick={onGroupAlone} title="Wrap this wire in its own group — e.g. to add a shield">
+            Group this wire (for shielding)
+          </button>
+        )}
         <button style={s.deleteBtn} onClick={onDelete}>Delete wire</button>
       </div>
     </div>
@@ -1385,13 +1524,14 @@ function WireInspector({
  * bundle only; toggling to `kind:'cable'` and filling in part fields turns
  * it into a real BOM line, sourced from the parts list. */
 function GroupInspector({
-  store, group, memberWires, onUngroup, onRemoveMember,
+  store, group, memberWires, onUngroup, onRemoveMember, onClose,
 }: {
   store: HarnessStore;
   group: WireGroup;
   memberWires: SceneWire[];
   onUngroup: () => void;
   onRemoveMember: (wireId: string) => void;
+  onClose: () => void;
 }) {
   const cablePart = group.partId ? store.doc.parts[group.partId] : undefined;
 
@@ -1434,6 +1574,7 @@ function GroupInspector({
             });
           }}
         />
+        <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
       </div>
       <div style={s.cardBody}>
         <div style={s.tabRow}>
@@ -1481,17 +1622,21 @@ function GroupInspector({
   );
 }
 
-/** Generic right-click context menu, wired to component nodes, wires, and
- * groups (spec request: "each component has a drop down menu when it is
- * right clicked so we can add new features as we go forward"). Item set is
- * deliberately small and real today (Edit / Duplicate / Flip / Delete /
- * Ungroup) with room to extend per target kind. */
+/** Generic right-click context menu, wired to component nodes, wires,
+ * groups, and notes (spec request: "each component has a drop down menu
+ * when it is right clicked so we can add new features as we go forward";
+ * Connor's follow-up: "I don't like the drop down menus that appear upon a
+ * click... almost no drop down menu needed unless the user right clicks").
+ * Plain click now only selects/highlights (see `select()` in the parent) —
+ * this menu, and its "Edit" item specifically, is the only way to open the
+ * full property card. Item set stays small and real per target kind. */
 function ContextMenu({
-  state, store, onClose, onDuplicate, onDelete, onUngroupWire, onUngroup, onResetWireRouting,
+  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup, onResetWireRouting,
 }: {
   state: ContextMenuState;
   store: HarnessStore;
   onClose: () => void;
+  onEdit: () => void;
   onDuplicate: (componentId: string) => void;
   onDelete: () => void;
   onUngroupWire: (groupId: string, wireId: string) => void;
@@ -1499,6 +1644,7 @@ function ContextMenu({
   onResetWireRouting: (wireId: string) => void;
 }) {
   const items: { label: string; onClick: () => void; danger?: boolean }[] = [];
+  items.push({ label: 'Edit', onClick: () => { onEdit(); onClose(); } });
 
   if (state.target.kind === 'component') {
     const component = store.doc.components[state.target.id];
@@ -1524,8 +1670,10 @@ function ContextMenu({
       items.push({ label: 'Reset routing', onClick: () => { onResetWireRouting(state.target.id); onClose(); } });
     }
     items.push({ label: 'Delete wire', danger: true, onClick: () => { onDelete(); onClose(); } });
-  } else {
+  } else if (state.target.kind === 'group') {
     items.push({ label: 'Ungroup', onClick: () => { onUngroup(state.target.id); onClose(); } });
+  } else {
+    items.push({ label: 'Delete note', danger: true, onClick: () => { onDelete(); onClose(); } });
   }
 
   return (
@@ -1757,6 +1905,11 @@ const s = {
   flipBtn: {
     border: `1px solid ${theme.color.border}`, background: theme.color.surface, borderRadius: 5,
     width: 24, height: 24, cursor: 'pointer', color: theme.color.textMuted, fontSize: 13, lineHeight: 1,
+    flexShrink: 0,
+  },
+  closeBtn: {
+    border: 'none', background: 'transparent', borderRadius: 5,
+    width: 22, height: 22, cursor: 'pointer', color: theme.color.textFaint, fontSize: 16, lineHeight: 1,
     flexShrink: 0,
   },
   tabRow: { display: 'flex', gap: 2, padding: '8px 12px 0 12px' },
