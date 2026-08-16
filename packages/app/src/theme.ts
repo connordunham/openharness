@@ -4,41 +4,49 @@
  * small palette + spacing scale imported by App.tsx and SchematicCanvas.tsx
  * so the toolbar, panels, and canvas read as one coherent app instead of
  * two components independently choosing colors.
+ *
+ * Dark mode (follow-up request): every color below is a CSS custom-property
+ * reference rather than a literal hex value. The actual light/dark values
+ * live in index.css as `:root` vs `[data-theme='dark']` rules, so toggling
+ * `document.documentElement.dataset.theme` (see App.tsx) re-themes the whole
+ * app instantly with zero changes needed in any component that consumes
+ * `theme.color.*` — they're just var() strings, which every CSS/SVG color
+ * property accepts natively.
  */
 
 export const theme = {
   color: {
     // Neutrals
-    surface: '#ffffff',
-    canvasBg: '#fafafa',
-    border: '#e2e4e8',
-    borderStrong: '#c9cdd4',
+    surface: 'var(--oh-surface)',
+    canvasBg: 'var(--oh-canvasBg)',
+    border: 'var(--oh-border)',
+    borderStrong: 'var(--oh-borderStrong)',
 
-    textStrong: '#1a1d23',
-    textMuted: '#5b616e',
-    textFaint: '#8a8f99',
+    textStrong: 'var(--oh-textStrong)',
+    textMuted: 'var(--oh-textMuted)',
+    textFaint: 'var(--oh-textFaint)',
 
     // Brand / accent
-    accent: '#2f6fed',
-    accentSoft: '#eaf1ff',
-    accentHover: '#2860d0',
+    accent: 'var(--oh-accent)',
+    accentSoft: 'var(--oh-accentSoft)',
+    accentHover: 'var(--oh-accentHover)',
 
     // Status
-    danger: '#c4362f',
-    dangerSoft: '#fdf1f0',
-    dangerBorder: '#f2c9c6',
-    warning: '#a15c07',
-    warningSoft: '#fdf3e2',
-    info: '#1c5fc9',
-    infoSoft: '#eaf2ff',
+    danger: 'var(--oh-danger)',
+    dangerSoft: 'var(--oh-dangerSoft)',
+    dangerBorder: 'var(--oh-dangerBorder)',
+    warning: 'var(--oh-warning)',
+    warningSoft: 'var(--oh-warningSoft)',
+    info: 'var(--oh-info)',
+    infoSoft: 'var(--oh-infoSoft)',
 
     // Canvas
-    nodeFill: '#ffffff',
-    nodeBorder: '#c9cdd4',
-    headerFill: '#f3f4f6',
-    gridDot: '#e5e7eb',
-    noteFill: '#fffdf0',
-    noteBorder: '#e8dfa8',
+    nodeFill: 'var(--oh-nodeFill)',
+    nodeBorder: 'var(--oh-nodeBorder)',
+    headerFill: 'var(--oh-headerFill)',
+    gridDot: 'var(--oh-gridDot)',
+    noteFill: 'var(--oh-noteFill)',
+    noteBorder: 'var(--oh-noteBorder)',
   },
   radius: {
     control: 6,

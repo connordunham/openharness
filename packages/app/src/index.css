@@ -1,20 +1,96 @@
+/* Light theme (default) + dark theme (data-theme="dark") design tokens.
+   theme.ts references these as var(--oh-*) so every component that reads
+   theme.color.* re-themes automatically when App.tsx toggles the attribute
+   on <html> — see the dark-mode toggle in App.tsx's toolbar. */
+:root {
+  --oh-surface: #ffffff;
+  --oh-canvasBg: #fafafa;
+  --oh-border: #e2e4e8;
+  --oh-borderStrong: #c9cdd4;
+
+  --oh-textStrong: #1a1d23;
+  --oh-textMuted: #5b616e;
+  --oh-textFaint: #8a8f99;
+
+  --oh-accent: #2f6fed;
+  --oh-accentSoft: #eaf1ff;
+  --oh-accentHover: #2860d0;
+
+  --oh-danger: #c4362f;
+  --oh-dangerSoft: #fdf1f0;
+  --oh-dangerBorder: #f2c9c6;
+  --oh-warning: #a15c07;
+  --oh-warningSoft: #fdf3e2;
+  --oh-info: #1c5fc9;
+  --oh-infoSoft: #eaf2ff;
+
+  --oh-nodeFill: #ffffff;
+  --oh-nodeBorder: #c9cdd4;
+  --oh-headerFill: #f3f4f6;
+  --oh-gridDot: #e5e7eb;
+  --oh-noteFill: #fffdf0;
+  --oh-noteBorder: #e8dfa8;
+
+  --oh-focusRing: rgba(47, 111, 237, 0.15);
+  --oh-scrollbarThumb: #d4d7dd;
+}
+
+[data-theme='dark'] {
+  --oh-surface: #1c1f26;
+  --oh-canvasBg: #14161b;
+  --oh-border: #2c3038;
+  --oh-borderStrong: #3d424c;
+
+  --oh-textStrong: #f0f1f3;
+  --oh-textMuted: #a7acb6;
+  --oh-textFaint: #767c87;
+
+  --oh-accent: #5b8dff;
+  --oh-accentSoft: #1d2b4a;
+  --oh-accentHover: #6f9bff;
+
+  --oh-danger: #ff6b64;
+  --oh-dangerSoft: #3a1e1c;
+  --oh-dangerBorder: #5c2c29;
+  --oh-warning: #e0a542;
+  --oh-warningSoft: #3a2e14;
+  --oh-info: #6fa4ff;
+  --oh-infoSoft: #1b2a45;
+
+  --oh-nodeFill: #20242c;
+  --oh-nodeBorder: #3d424c;
+  --oh-headerFill: #262a33;
+  --oh-gridDot: #2a2e36;
+  --oh-noteFill: #2c2a18;
+  --oh-noteBorder: #4a4526;
+
+  --oh-focusRing: rgba(91, 141, 255, 0.25);
+  --oh-scrollbarThumb: #3d424c;
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+html { color-scheme: light; }
+html[data-theme='dark'] { color-scheme: dark; }
 body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  background: var(--oh-canvasBg);
+  transition: background-color 150ms ease;
 }
 button, input, select, textarea { font-family: inherit; }
 button { transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease; }
 button:hover:not(:disabled) { filter: brightness(0.97); }
+[data-theme='dark'] button:hover:not(:disabled) { filter: brightness(1.15); }
 button:active:not(:disabled) { filter: brightness(0.93); }
+[data-theme='dark'] button:active:not(:disabled) { filter: brightness(1.3); }
 button:disabled { opacity: 0.5; cursor: default; }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: #2f6fed;
-  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.15);
+  border-color: var(--oh-accent);
+  box-shadow: 0 0 0 3px var(--oh-focusRing);
 }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #d4d7dd; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb { background: var(--oh-scrollbarThumb); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }

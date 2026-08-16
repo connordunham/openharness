@@ -44,6 +44,24 @@ export function App() {
   // now (harmless: each pane just checks the id against its own content).
   const [hoveredComponentId, setHoveredComponentId] = useState<string | null>(null);
 
+  // Dark mode (follow-up request). The actual color values live in
+  // index.css as `[data-theme='dark']` overrides of the --oh-* vars that
+  // theme.ts's `theme.color.*` now resolve to, so toggling the attribute on
+  // <html> re-themes every pane at once — nothing else needs to change.
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try {
+      const saved = window.localStorage.getItem('openharness.theme');
+      if (saved) return saved === 'dark';
+      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = darkMode ? 'dark' : 'light';
+    try { window.localStorage.setItem('openharness.theme', darkMode ? 'dark' : 'light'); } catch { /* ignore */ }
+  }, [darkMode]);
+
   const newDocument = useCallback(() => {
     setError(null);
     setImportWarnings([]);
@@ -175,6 +193,13 @@ export function App() {
 
         <div style={styles.toolbarSpacer} />
         {sourcePath && <span style={styles.path} title={sourcePath}>{shortenPath(sourcePath)}</span>}
+        <button
+          style={styles.iconToggle}
+          onClick={() => setDarkMode((d) => !d)}
+          title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {darkMode ? '☀︎' : '☾'}
+        </button>
       </header>
 
       {error && (
@@ -308,6 +333,11 @@ const styles = {
     color: danger ? theme.color.danger : theme.color.warning,
   }),
   path: { color: theme.color.textFaint, fontSize: 12, fontFamily: 'ui-monospace, monospace' },
+  iconToggle: {
+    width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control,
+    background: theme.color.surface, color: theme.color.textMuted, cursor: 'pointer', fontSize: 14, padding: 0,
+  },
   errorBanner: {
     display: 'flex', alignItems: 'center', gap: 12, background: theme.color.dangerSoft, color: theme.color.danger,
     padding: '8px 16px', borderBottom: `1px solid ${theme.color.dangerBorder}`, fontSize: 13,

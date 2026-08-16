@@ -357,6 +357,23 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
     [pendingWire, store],
   );
 
+  // Shift-click seeds the multi-select set from whatever's already singly
+  // `selected` (spec follow-up: plain-click-then-shift-click, the normal OS
+  // convention for extending a selection, was silently dropping the first
+  // click — shift-click only ever toggled the *new* item, so a lone
+  // shift-click after a plain click produced a 1-item set that could never
+  // reach the size-2 "Group" threshold). Seeding once here, on the first
+  // shift-click after a plain click, makes click-then-shift-click behave the
+  // way people expect; repeated shift-clicks after that just toggle as before.
+  const seedMultiSelectFromSingle = useCallback(
+    (next: Set<string>) => {
+      if (next.size > 0) return;
+      if (selected?.kind === 'wire') next.add(wireKey(selected.id));
+      else if (selected?.kind === 'group') next.add(groupKey(selected.id));
+    },
+    [selected],
+  );
+
   const onWireClick = useCallback(
     (wireId: string, e: React.MouseEvent) => {
       e.stopPropagation();
@@ -364,6 +381,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       if (e.shiftKey) {
         setMultiSelect((prev) => {
           const next = new Set(prev);
+          seedMultiSelectFromSingle(next);
           const key = wireKey(wireId);
           if (next.has(key)) next.delete(key); else next.add(key);
           return next;
@@ -374,7 +392,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       setSelected({ kind: 'wire', id: wireId });
       setInspectorTab('edit');
     },
-    [],
+    [seedMultiSelectFromSingle],
   );
 
   const onGroupHaloClick = useCallback(
@@ -384,6 +402,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       if (e.shiftKey) {
         setMultiSelect((prev) => {
           const next = new Set(prev);
+          seedMultiSelectFromSingle(next);
           const key = groupKey(groupId);
           if (next.has(key)) next.delete(key); else next.add(key);
           return next;
@@ -394,7 +413,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
       setSelected({ kind: 'group', id: groupId });
       setInspectorTab('edit');
     },
-    [],
+    [seedMultiSelectFromSingle],
   );
 
   const groupSelection = useCallback(() => {

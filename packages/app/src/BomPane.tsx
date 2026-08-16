@@ -347,10 +347,14 @@ function AssignRow({
           }}
         >
           <option value="">— unassigned —</option>
-          {options.map((p) => (
-            <option key={p.id} value={p.id}>{p.partNumber || `(unnamed ${p.kind})`}{p.manufacturer ? ` — ${p.manufacturer}` : ''}</option>
-          ))}
-          <option value="__new__">+ New part…</option>
+          {options.length > 0 && (
+            <optgroup label="Place from library">
+              {options.map((p) => (
+                <option key={p.id} value={p.id}>{p.partNumber || `(unnamed ${p.kind})`}{p.manufacturer ? ` — ${p.manufacturer}` : ''}</option>
+              ))}
+            </optgroup>
+          )}
+          <option value="__new__">+ Create new part…</option>
         </select>
       </div>
       {editing && (
