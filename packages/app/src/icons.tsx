@@ -9,27 +9,101 @@
  * Deliberately plain geometric line-icons (16x16, currentColor stroke) —
  * no external icon library, kept dependency-free and consistent with the
  * rest of the schematic canvas rendering.
+ *
+ * Connectors additionally sub-categorize by `ConnectorPart.housingShape`
+ * (Connor's follow-up: "make better graphical representations of connectors
+ * based of connector type, have sub categories") — a rectangular multi-pin
+ * housing, a circular/round housing, a D-sub trapezoid, an inline bullet
+ * splice-style barrel, and a terminal-block strip each get a distinct
+ * glyph. `connectorAppearance()` resolves a Connector component to its
+ * part's housingShape/iconGlyph so callers don't need to know about parts
+ * directly. If `iconGlyph` is set on the part, it fully replaces the shape
+ * glyph with the user's own short text/emoji — the "custom mini icons...
+ * manually override their appearance" half of the same request.
  */
 
-import type { Component } from '@openharness/core';
+import type { Component, ConnectorHousingShape, ConnectorPart, HarnessDocument } from '@openharness/core';
 
 type IconType = Component['type'] | 'note';
 
-export function ComponentIcon({ type, size = 14 }: { type: IconType; size?: number }) {
+/** Resolves a connector component to its part's appearance override, if
+ * any. Safe to call for non-connector components (always returns nothing
+ * useful) so call sites don't need their own type guards. */
+export function connectorAppearance(
+  component: Component | undefined,
+  doc: HarnessDocument,
+): { housingShape?: ConnectorHousingShape; glyph?: string } {
+  if (!component || component.type !== 'connector' || !component.partId) return {};
+  const part = doc.parts[component.partId] as ConnectorPart | undefined;
+  if (!part) return {};
+  return { housingShape: part.housingShape, glyph: part.iconGlyph };
+}
+
+export function ComponentIcon({
+  type, size = 14, housingShape, glyph,
+}: {
+  type: IconType; size?: number; housingShape?: ConnectorHousingShape; glyph?: string;
+}) {
   const common = {
     width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
     stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
   };
+  if (type === 'connector' && glyph) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: size, height: size, fontSize: size * 0.85, lineHeight: 1 }}>
+        {glyph}
+      </span>
+    );
+  }
   switch (type) {
     case 'connector':
-      return (
-        <svg {...common}>
-          <rect x={2} y={3} width={9} height={10} rx={1.5} />
-          <line x1={11} y1={5.5} x2={14} y2={5.5} />
-          <line x1={11} y1={8} x2={14} y2={8} />
-          <line x1={11} y1={10.5} x2={14} y2={10.5} />
-        </svg>
-      );
+      switch (housingShape) {
+        case 'circular':
+          return (
+            <svg {...common}>
+              <circle cx={6.5} cy={8} r={5} />
+              <line x1={11.5} y1={5.5} x2={14.5} y2={5.5} />
+              <line x1={11.5} y1={8} x2={14.5} y2={8} />
+              <line x1={11.5} y1={10.5} x2={14.5} y2={10.5} />
+            </svg>
+          );
+        case 'dSub':
+          return (
+            <svg {...common}>
+              <path d="M2 4.5 L9.5 3.5 L11 8 L9.5 12.5 L2 11.5 Z" />
+              <line x1={11} y1={5.5} x2={14} y2={5.5} />
+              <line x1={11} y1={8} x2={14} y2={8} />
+              <line x1={11} y1={10.5} x2={14} y2={10.5} />
+            </svg>
+          );
+        case 'inline':
+          return (
+            <svg {...common}>
+              <rect x={2} y={5.5} width={6} height={5} rx={1} />
+              <line x1={8} y1={8} x2={11} y2={8} />
+              <circle cx={12.5} cy={8} r={2} />
+            </svg>
+          );
+        case 'blockTerminal':
+          return (
+            <svg {...common}>
+              <rect x={2} y={4} width={12} height={8} rx={1} />
+              <line x1={4.5} y1={4} x2={4.5} y2={12} />
+              <line x1={8} y1={4} x2={8} y2={12} />
+              <line x1={11.5} y1={4} x2={11.5} y2={12} />
+            </svg>
+          );
+        case 'rectangular':
+        default:
+          return (
+            <svg {...common}>
+              <rect x={2} y={3} width={9} height={10} rx={1.5} />
+              <line x1={11} y1={5.5} x2={14} y2={5.5} />
+              <line x1={11} y1={8} x2={14} y2={8} />
+              <line x1={11} y1={10.5} x2={14} y2={10.5} />
+            </svg>
+          );
+      }
     case 'splice':
       return (
         <svg {...common}>

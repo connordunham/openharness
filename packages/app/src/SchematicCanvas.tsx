@@ -43,12 +43,12 @@ import { useCallback, useMemo, useState } from 'react';
 import { useEffect, useRef } from 'react';
 import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
-  SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, PartId, WireGroup, WirePart,
+  SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
 } from '@openharness/core';
 import { newInstanceId, newPartId } from '@openharness/core';
 import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
 import { theme } from './theme.js';
-import { ComponentIcon } from './icons.js';
+import { ComponentIcon, connectorAppearance } from './icons.js';
 
 interface Props {
   store: HarnessStore;
@@ -90,6 +90,13 @@ interface ContextMenuState {
 const SPLICE_KINDS: SpliceKind[] = ['crimp', 'weld', 'solderSleeve'];
 const TERMINAL_KINDS: TerminalKind[] = [
   'ferrule', 'ring', 'spade', 'maleQuickConnect', 'femaleQuickConnect', 'looseWireEnd',
+];
+const HOUSING_SHAPES: { value: ConnectorHousingShape; label: string }[] = [
+  { value: 'rectangular', label: 'Rectangular (multi-pin)' },
+  { value: 'circular', label: 'Circular' },
+  { value: 'dSub', label: 'D-sub' },
+  { value: 'inline', label: 'Inline / bullet' },
+  { value: 'blockTerminal', label: 'Terminal block' },
 ];
 const ACCESSORY_SLOTS = [
   { key: 'lockPartId', label: 'Lock', type: 'lock' },
@@ -835,7 +842,7 @@ export function SchematicCanvas({ store, hoveredComponentId, onHoverComponent }:
                     />
                   )}
                   <foreignObject x={node.x + 6} y={node.y + 3} width={16} height={16} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
-                    <ComponentIcon type={node.type} size={13} />
+                    <ComponentIcon type={node.type} size={13} {...connectorAppearance(store.doc.components[node.componentId], store.doc)} />
                   </foreignObject>
                   <text x={node.x + 24} y={node.y + HEADER_HEIGHT - 7} fontSize={12} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
                     {node.refdes}
@@ -1090,7 +1097,7 @@ function ComponentInspector({
   return (
     <div style={s.card}>
       <div style={s.cardHeader}>
-        <ComponentIcon type={component.type} />
+        <ComponentIcon type={component.type} {...connectorAppearance(component, store.doc)} />
         <input
           style={s.titleInput}
           value={component.refdes}
@@ -1600,6 +1607,26 @@ function ConnectorProperties({ store, component }: { store: HarnessStore; compon
         />
         Has shell
       </label>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+        <div style={{ flex: 1 }}>
+          <label style={s.fieldLabel}>Housing shape</label>
+          <select
+            style={s.input} value={part?.housingShape ?? 'rectangular'}
+            onChange={(e) => { const v = e.target.value as ConnectorHousingShape; updatePart((p) => { p.housingShape = v; }); }}
+          >
+            {HOUSING_SHAPES.map((h) => <option key={h.value} value={h.value}>{h.label}</option>)}
+          </select>
+        </div>
+        <div style={{ width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, color: theme.color.textMuted, flexShrink: 0 }} title="Preview">
+          <ComponentIcon type="connector" size={16} housingShape={part?.housingShape} glyph={part?.iconGlyph} />
+        </div>
+      </div>
+      <label style={s.fieldLabel}>Custom icon (optional — overrides housing shape)</label>
+      <input
+        style={s.input} value={part?.iconGlyph ?? ''} maxLength={3} placeholder="e.g. a short glyph or emoji"
+        onChange={(e) => { const v = e.target.value; updatePart((p) => { p.iconGlyph = v || undefined; }); }}
+      />
 
       <div style={s.sectionLabel}>Configurations</div>
       {(part?.configurations ?? []).map((config) => (

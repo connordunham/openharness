@@ -50,7 +50,7 @@ import { useCallback, useRef, useState } from 'react';
 import type { HarnessStore, Component, Point } from '@openharness/core';
 import { newInstanceId, computeDerivedModel } from '@openharness/core';
 import { theme } from './theme.js';
-import { ComponentIcon } from './icons.js';
+import { ComponentIcon, connectorAppearance } from './icons.js';
 
 const PX_PER_MM = 4;
 const NODE_W = 76;
@@ -324,7 +324,7 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
             <span style={s.unplacedLabel}>Unplaced ({unplaced.length}):</span>
             {unplaced.map((c) => (
               <button key={c.id} style={s.unplacedChip} onClick={() => placeComponent(c.id)} title="Click to place in layout">
-                <ComponentIcon type={c.type} size={11} /> {c.refdes}
+                <ComponentIcon type={c.type} size={11} {...connectorAppearance(c, doc)} /> {c.refdes}
               </button>
             ))}
           </div>
@@ -425,7 +425,7 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
                       <title>{`${c.refdes} — ${wireTooltip(wiresThroughComponent(c.id), doc)}`}</title>
                     </rect>
                     <foreignObject x={p.x + 5} y={p.y + 4} width={13} height={13} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
-                      <ComponentIcon type={c.type} size={11} />
+                      <ComponentIcon type={c.type} size={11} {...connectorAppearance(c, doc)} />
                     </foreignObject>
                     <text x={p.x + 21} y={p.y + NODE_H / 2 + 4} fontSize={11.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
                       {c.refdes}
@@ -444,7 +444,7 @@ export function LayoutCanvas({ store, hoveredComponentId, onHoverComponent }: Pr
               <div style={{ position: 'absolute', left: toPx(selectedComponent.layoutPosition).x, top: toPx(selectedComponent.layoutPosition).y + NODE_H + 8, zIndex: 2 }}>
                 <div style={s.card}>
                   <div style={s.cardHeader}>
-                    <ComponentIcon type={selectedComponent.type} />
+                    <ComponentIcon type={selectedComponent.type} {...connectorAppearance(selectedComponent, doc)} />
                     <span style={s.cardTitle}>{selectedComponent.refdes}</span>
                   </div>
                   <div style={s.cardBody}>

@@ -347,6 +347,13 @@ export interface ConnectorConfiguration {
   cavitySealPartId?: PartId;
 }
 
+/** [inferred] — not in either reference export; added for Connor's follow-up
+ * "make better graphical representations of connectors based of connector
+ * type (have sub categories...)". A coarse family of common physical
+ * connector housings, not a real part-catalog taxonomy — good enough to
+ * pick a recognizably different glyph, with room to grow. */
+export type ConnectorHousingShape = 'rectangular' | 'circular' | 'dSub' | 'inline' | 'blockTerminal';
+
 export interface ConnectorPart extends PartBase {
   kind: 'connector';
   numberOfCavities: number;
@@ -358,6 +365,16 @@ export interface ConnectorPart extends PartBase {
   cavityLayout?: { rows: number; cols: number; pitch: number; map?: (string | null)[][] };
   matingPartId?: PartId;
   keying?: string; // [inferred] free text for now — spec R7
+  /** [inferred] Physical housing family, drives which glyph the Schematic
+   * and Layout canvases draw for connectors using this part. Defaults to
+   * 'rectangular' (the original single connector icon) when unset, so
+   * every pre-existing document renders exactly as before. */
+  housingShape?: ConnectorHousingShape;
+  /** [inferred] "...or ways to eventually make custom mini icons for
+   * connectors if users want to manually override their appearance" — a
+   * short user-typed glyph (emoji or 1-2 characters) that, when set,
+   * replaces the housing-shape icon entirely for this part. */
+  iconGlyph?: string;
 }
 
 export interface WirePart extends PartBase {
