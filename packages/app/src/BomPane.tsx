@@ -18,12 +18,12 @@
 
 import { useCallback, useState } from 'react';
 import type {
-  HarnessStore, Component, Part, PartId, WireGroup, ConnectorConfiguration, GaugeUnit, MaxRatingUnit,
+  HarnessStore, Component, Part, PartId, WireGroup, ConnectorConfiguration, GaugeUnit,
 } from '@openharness/core';
 import { newPartId, newInstanceId } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon } from './icons.js';
-import { MAX_RATING_UNITS } from './partFields.js';
+import { PartParametersEditor } from './partFields.js';
 
 type PartKind = Part['kind'];
 
@@ -74,8 +74,6 @@ interface NewPartFields {
   url: string;
   description: string;
   price: string;
-  maxRatingValue: string;
-  maxRatingUnit: MaxRatingUnit;
   gender: '' | 'male' | 'female' | 'hermaphroditic';
   color: string;
   hasShell: boolean;
@@ -88,7 +86,6 @@ interface NewPartFields {
 
 const EMPTY_FIELDS: NewPartFields = {
   partNumber: '', manufacturer: '', vendorPartNumber: '', url: '', description: '', price: '',
-  maxRatingValue: '', maxRatingUnit: 'V',
   gender: '', color: '', hasShell: false,
   gaugeValue: '', gaugeUnit: 'mm2',
   accessoryType: 'contact', coveringType: 'heatShrink',
@@ -141,7 +138,6 @@ export function BomPane({ store, hoveredComponentId, onHoverComponent }: BomPane
           url: fields.url || undefined,
           description: fields.description || undefined,
           price: fields.price ? Number(fields.price) : undefined,
-          maxRating: fields.maxRatingValue ? { value: Number(fields.maxRatingValue), unit: fields.maxRatingUnit } : undefined,
           custom: {},
         };
 
@@ -397,16 +393,13 @@ function NewPartForm({ kind, onCreate, onCancel }: { kind: PartKind; onCreate: (
         <Field label="Link"><input style={s.input} placeholder="https://…" value={fields.url} onChange={(e) => set('url', e.target.value)} /></Field>
         <Field label="Description"><input style={s.input} value={fields.description} onChange={(e) => set('description', e.target.value)} /></Field>
         <Field label={kind === 'wire' ? 'Cost (per unit length)' : 'Cost'}><input style={s.input} type="number" step="0.01" value={fields.price} onChange={(e) => set('price', e.target.value)} /></Field>
-        <div style={{ gridColumn: '1 / -1' }}>
-          <Field label="Max rating">
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input style={{ ...s.input, flex: 1.4 }} type="number" step="any" placeholder="value" value={fields.maxRatingValue} onChange={(e) => set('maxRatingValue', e.target.value)} />
-              <select style={{ ...s.input, flex: 1 }} value={fields.maxRatingUnit} onChange={(e) => set('maxRatingUnit', e.target.value as MaxRatingUnit)}>
-                {MAX_RATING_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
-              </select>
-            </div>
-          </Field>
-        </div>
+        {/* Ratings used to be a single "Max rating" value+unit pair captured
+            here at creation time. They're now the repeatable parameter list
+            (see PartParameter), which is edited on the part's own row in the
+            library below — deliberately not duplicated into this create
+            form, which is already long and whose job is to get a part into
+            the library, not to fully characterise it. Expand the new part
+            immediately after creating it to add parameters. */}
 
         {kind === 'connector' && (
           <>
@@ -514,26 +507,7 @@ function PartLibraryRow({
           <Field label="Link"><input style={s.input} placeholder="https://…" value={part.url ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.url = v || undefined; }); }} /></Field>
           <Field label="Description"><input style={s.input} value={part.description ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.description = v || undefined; }); }} /></Field>
           <Field label={part.kind === 'wire' ? 'Cost (per unit length)' : 'Cost'}><input style={s.input} type="number" step="0.01" value={part.price ?? ''} onChange={(e) => { const v = e.target.value; onUpdate((p) => { p.price = v ? Number(v) : undefined; }); }} /></Field>
-          <Field label="Max rating">
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                style={{ ...s.input, flex: 1.4 }} type="number" step="any" placeholder="value" value={part.maxRating?.value ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  onUpdate((p) => {
-                    if (!v) { p.maxRating = undefined; return; }
-                    p.maxRating = { value: Number(v), unit: p.maxRating?.unit ?? 'V' };
-                  });
-                }}
-              />
-              <select
-                style={{ ...s.input, flex: 1 }} value={part.maxRating?.unit ?? 'V'}
-                onChange={(e) => { const unit = e.target.value as MaxRatingUnit; onUpdate((p) => { p.maxRating = { value: p.maxRating?.value ?? 0, unit }; }); }}
-              >
-                {MAX_RATING_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
-              </select>
-            </div>
-          </Field>
+          <PartParametersEditor part={part} onUpdate={onUpdate} />
           <button style={s.deleteBtn} onClick={onDelete}>Delete part</button>
         </div>
       )}

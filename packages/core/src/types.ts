@@ -67,12 +67,39 @@ export interface SheetSize {
   heightMm: number;
 }
 
+/**
+ * [inferred] — Connor: "add a project level setting to pick between IEEE Std
+ * 315-1975 and IEC 60617-3 twisted-pair symbol styles". The two standards
+ * draw the same idea differently: IEEE 315 uses interlocking loops (the
+ * conductors visibly wrap around one another), IEC 60617-3 uses a single
+ * shared crossing zone with the pair drawn as a braid. Which one a shop uses
+ * is a drawing-standard decision made once per project, not per group —
+ * hence a document setting rather than a field on WireGroup.
+ */
+export type TwistedPairStyle = 'ieee315' | 'iec60617';
+
 export interface DocumentSettings {
   lengthUnit: LengthUnit;
   gaugeUnit: GaugeUnit;
   currency: Currency;
   formboard: { enabled: boolean; scale: number; sheet?: SheetSize };
   refdesPrefixes: Partial<Record<ComponentType, string>>;
+  /** [inferred] — see TwistedPairStyle. Unset reads as 'ieee315', which is
+   * exactly what the pre-setting renderer drew, so no existing document
+   * changes appearance by loading into a build that has this field. */
+  twistedPairStyle?: TwistedPairStyle;
+  /** [inferred] — Connor: parasitics "should default to zero and be hidden
+   * in the properties tab unless a 'show parasitics' checkbox is toggled".
+   * Project-level rather than per-panel so the choice survives reload and
+   * every Properties surface agrees; unset reads as false (hidden). */
+  showParasitics?: boolean;
+  /** [inferred] — Connor: "a configurable straight exit-stub length for
+   * wires leaving a connector so there's room to draw the shield-wrap symbol
+   * before the auto-router bends them". This is the `stub` the schematic
+   * router already took as an option (render/routing.ts) — promoting it to a
+   * document setting is what makes it user-controllable. In schematic px;
+   * unset reads as the router's own DEFAULT_STUB. */
+  schematicExitStub?: number;
 }
 
 export interface Point {
@@ -100,6 +127,26 @@ export type ComponentType =
   | 'connector' | 'splice' | 'terminal' | 'branchPoint'
   | 'resistor' | 'diode' | 'cable' | 'generic';
 
+/**
+ * [inferred] — Connor: "add parasitics to all components — optional
+ * resistance, capacitance and inductance, defaulting to zero and hidden in
+ * Properties unless a 'show parasitics' checkbox is toggled."
+ *
+ * Stored in base SI units (Ω, F, H) rather than a value+unit pair like
+ * `PartParameter`, deliberately: a parasitic is always the *same* physical
+ * quantity for a given field, so there is nothing for a unit selector to
+ * choose — only a display prefix, which is a formatting concern
+ * (`formatParasitic`), not a storage one. Every field is optional and
+ * `undefined` means "not characterised", which behaves as zero everywhere
+ * that sums parasitics — so an untouched document is numerically identical
+ * to one with explicit zeros, and nothing needs migrating.
+ */
+export interface Parasitics {
+  resistanceOhms?: number;
+  capacitanceFarads?: number;
+  inductanceHenries?: number;
+}
+
 export interface ComponentBase {
   id: ComponentId;
   type: ComponentType;
@@ -114,6 +161,12 @@ export interface ComponentBase {
   groupId?: GroupId;
   /** Confirmed against real exports (spec §3.3): plain array of part refs, not a separate entity. */
   coveringIds?: PartId[];
+  /** [inferred] — see Parasitics. Lives on the component *instance*, not on
+   * its Part: two connectors of the same catalog part in different positions
+   * on the same harness can legitimately be characterised differently (lead
+   * dress, mating hardware), and the parasitic is a property of this
+   * physical instance in this build. */
+  parasitics?: Parasitics;
   custom: Record<string, unknown>;
 }
 
@@ -144,12 +197,32 @@ export interface Cavity {
   custom: Record<string, unknown>;
 }
 
+/**
+ * [inferred] — Connor: "an optional connector 'backshell termination' toggle
+ * that adds a BS contact". A backshell termination is a real, wirable
+ * connection point (that's the whole reason to want it — a shield drain or
+ * ground strap lands on it), but it is NOT a cavity: it isn't in the
+ * housing's cavity count, doesn't take a contact or a seal, and must not
+ * change `numberOfCavities` or the cavity designations. So rather than
+ * pushing a synthetic `Cavity` into `Connector.cavities` — which would
+ * corrupt every count, template and BOM rollup that walks that array — the
+ * toggle is its own boolean, and the schematic scene emits an extra row for
+ * it keyed by this reserved id. Wires land on it through the ordinary
+ * `{ kind: 'cavity' }` endpoint (net extraction keys cavity vertices purely
+ * by id, so this participates in nets for free), and the one rule that would
+ * otherwise mis-fire on it — OVERFILLED_CAVITY, since a backshell legitimately
+ * takes several straps — skips this id explicitly.
+ */
+export const BACKSHELL_CAVITY_ID = '__backshell__';
+
 export interface Connector extends ComponentBase {
   type: 'connector';
   cavities: Cavity[];
   widthPercent?: number;
   flipped?: boolean;
   hasShell?: boolean;
+  /** [inferred] — see BACKSHELL_CAVITY_ID. */
+  backshellTermination?: boolean;
 }
 
 export type SpliceKind = 'crimp' | 'weld' | 'solderSleeve'; // [inferred] — spec §14/R6
@@ -248,7 +321,43 @@ export type Endpoint =
   | { kind: 'splice'; componentId: ComponentId }
   | { kind: 'terminalPoint'; componentId: ComponentId }
   | { kind: 'twoTerminalSide'; componentId: ComponentId; side: 'Left' | 'Right' }
+  /** [inferred] — Connor: shields need "a termination connection node on the
+   * shield itself". Without this a shield could only ever be *described*
+   * (a style enum and a free-text note); with it, the drain/pigtail is a real
+   * wire in the document, running from the shield to whatever it grounds to,
+   * and therefore appears in nets, in the interconnect table, and in the BOM
+   * like any other conductor. The node belongs to the WireGroup rather than
+   * to any one member wire, since the shield wraps the whole group. Routing
+   * treats it the same way it already treats a cable shield — status
+   * 'shield', no physical bundle path of its own (see derive/routing.ts). */
+  | { kind: 'shieldNode'; groupId: WireGroupId }
   | { kind: 'free'; point: Point };
+
+/**
+ * The Component an endpoint attaches to, or undefined for the two endpoint
+ * kinds that don't attach to one: `free` (a floating point) and `shieldNode`
+ * (which belongs to a WireGroup).
+ *
+ * Exported from core because the alternative — `'componentId' in ep` at each
+ * call site — is a property-existence check masquerading as a type guard.
+ * It compiles, it reads fine, and it silently starts returning the wrong
+ * answer the moment a new endpoint kind is added, because there is nothing
+ * for the compiler to complain about. This switch, by contrast, fails to
+ * build until the new kind is handled.
+ */
+export function endpointComponentId(ep: Endpoint): ComponentId | undefined {
+  switch (ep.kind) {
+    case 'cavity':
+    case 'cableCore':
+    case 'splice':
+    case 'terminalPoint':
+    case 'twoTerminalSide':
+      return ep.componentId;
+    case 'shieldNode':
+    case 'free':
+      return undefined;
+  }
+}
 
 export interface Wire {
   id: WireId;
@@ -275,16 +384,25 @@ export interface Wire {
   /** Manual override; computed length still surfaced so a DRC rule can flag divergence. */
   lengthOverride?: number;
 
-  /** Manual routing override for the Schematic canvas only (distinct from
-   * `route`/Bundle.waypoints, which are physical Layout-space routing —
-   * Connor's follow-up: "can't drag wires around manually to place them as
-   * I wish"). When set, the Schematic renders a straight two-segment path
-   * from -> schematicWaypoint -> to instead of running the 45°-diagonal
-   * auto-router. Absent means auto-routed, same as before this field
-   * existed. Single point for now (one manual bend); a full manual
-   * polyline is a natural future extension of this same field becoming an
-   * array. */
-  schematicWaypoint?: Point;
+  /**
+   * Manual routing override for the Schematic canvas only (distinct from
+   * `route`/`Bundle.waypoints`, which are physical Layout-space routing).
+   * Each entry is one user-placed bend, in order from `source` to `target`;
+   * an empty or absent array means "auto-routed", exactly as before this
+   * field existed.
+   *
+   * The port stubs are NOT part of this list and are never editable: a wire
+   * still leaves its source port heading in that port's exit direction and
+   * still arrives at its target port from the correct side (see
+   * render/routing.ts), because those two segments are electrical-drawing
+   * correctness, not styling — a wire entering the back of a pin is simply
+   * wrong. The manual path runs between the two stubs.
+   *
+   * Was `schematicWaypoint?: Point` (a single bend). That singular field was
+   * removed along with the drag UI and is now migrated on load
+   * (`migrateLegacyFields`) rather than read in two places forever.
+   */
+  schematicWaypoints?: Point[];
 
   ends?: { source: WireEnd; target: WireEnd };
 
@@ -309,6 +427,23 @@ export interface Wire {
 export interface WireGroup {
   id: WireGroupId;
   kind: 'twist' | 'cable';
+  /**
+   * [inferred] — Connor: "decouple the twisted visual from the group's
+   * `kind` — make it an explicit opt-in checkbox instead of automatic."
+   *
+   * `kind` answers a commercial question (does this grouping roll up to a
+   * BOM line?); whether the conductors are physically twisted is an
+   * independent manufacturing fact. The old renderer conflated the two by
+   * drawing the crossover glyph for exactly `kind === 'twist'`, which made
+   * both mistakes at once: a twisted pair that gets a cable part number
+   * silently stopped looking twisted, and an untwisted bundle of loose wires
+   * looked twisted because it had no part yet.
+   *
+   * Unset is migrated on load to `kind === 'twist'` so every existing
+   * document keeps the exact appearance it had (`migrateLegacyFields`);
+   * after that the two fields move independently.
+   */
+  twisted?: boolean;
   refdes?: string;
   memberWireIds: WireId[];
   /** Nested groups — e.g. two twisted pairs bundled into one jacketed cable. */
@@ -335,9 +470,64 @@ export interface WireGroup {
    * "pulled from the designed part number" plays out in practice.
    * Termination fields (spec follow-up, schematic/visual/text-note form)
    * live on `ShieldTermination`, added alongside this. */
-  shield?: { partId?: PartId; termination?: ShieldTermination };
+  shield?: Shield;
   custom: Record<string, unknown>;
 }
+
+/**
+ * [inferred] — Connor: "a shield 'model' choice (standalone part /
+ * IPC-620 wire+termination / custom)". This is a costing/documentation
+ * question, not a geometry one: the same physical braid is bought and
+ * documented three different ways depending on the shop's convention.
+ *
+ * - `standalonePart` — the shield is its own line item with its own part
+ *   number (the original behaviour, and still the default).
+ * - `ipc620WireTermination` — IPC/WHMA-A-620 treats the shield termination
+ *   as an assembly operation on a wire rather than a separate purchased
+ *   part: the braid and its termination are called out together against the
+ *   conductor. Documents that follow 620 don't want a phantom BOM line for
+ *   the braid itself, so this model suppresses it (see derive/bom.ts).
+ * - `custom` — neither convention; the user is describing it by hand in the
+ *   note/parameters and doesn't want the tool asserting a rollup either way.
+ */
+export type ShieldModel = 'standalonePart' | 'ipc620WireTermination' | 'custom';
+
+/** [inferred] — see WireGroup.shield. */
+export interface Shield {
+  partId?: PartId;
+  /** [inferred] — see ShieldModel. Unset reads as 'standalonePart'. */
+  model?: ShieldModel;
+  /**
+   * [inferred] — Connor: "user-controlled position along the wire run
+   * (wrapping at the connector)". Fraction of the run, measured inward from
+   * each end, at which the shield-wrap mark is drawn — so 0 sits right at
+   * the connector face and 0.5 sits at mid-span. Applies to both ends
+   * symmetrically, which is what "wrapping at the connector" means in
+   * practice: a shield terminates at both ends of the run it covers, at the
+   * same inset. Unset reads as DEFAULT_SHIELD_POSITION.
+   */
+  position?: number;
+  /** Termination detail. `termination` is the shared/default one;
+   * `sourceTermination`/`targetTermination` override it per end, since a
+   * shield can legitimately pigtail at one connector and land on a 360°
+   * backshell at the other. Unset per-end falls back to `termination`. */
+  termination?: ShieldTermination;
+  sourceTermination?: ShieldTermination;
+  targetTermination?: ShieldTermination;
+  /**
+   * [inferred] — Connor: "a termination connection node on the shield
+   * itself". When true the schematic draws a wirable node on the shield
+   * mark, and wires may target it via `{ kind: 'shieldNode', groupId }`.
+   * Off by default: a shield with no drain to document shouldn't sprout an
+   * extra port.
+   */
+  terminationNode?: boolean;
+}
+
+/** Default for `Shield.position` — far enough in from the connector face to
+ * clear the twist crossover glyph drawn in the same zone, close enough to
+ * still read as "terminated at the connector" rather than mid-span. */
+export const DEFAULT_SHIELD_POSITION = 0.14;
 
 /** [inferred] — coarse shield construction families (Connor: "multiple
  * types of shields to differentiate between braids, foils"). `foilBraid` is
@@ -392,13 +582,56 @@ export type LengthStatus =
 // Parts (spec §4.5)
 // ---------------------------------------------------------------------------
 
-/** [inferred] — Connor's follow-up: "add ... max rating (with selectable
- * units depending on what the max value is for that part)". Rather than a
- * fixed field per rating type (voltage/current/power/...), one generic
- * value+unit pair covers every part kind — a wire picks V or A, a covering
- * picks degC, a resistor picks W, etc. — without the type model needing a
- * dedicated field for every possible rating a real catalog part might list. */
-export type MaxRatingUnit = 'V' | 'A' | 'W' | 'ohm' | 'degC' | 'degF';
+/**
+ * [inferred] — Connor: "replace the single `maxRating` field with a
+ * repeatable list of `{value, type: min/max/nom/typ...}` parameters,
+ * user-extensible."
+ *
+ * `maxRating?: { value, unit }` was the previous shape: one generic
+ * value+unit pair meant to stand in for whatever rating mattered most for a
+ * given part kind. Real catalog parts don't have one rating — a wire has a
+ * voltage rating AND a current rating AND a temperature range, and the
+ * temperature range is itself two numbers (a min and a max) describing the
+ * same named quantity. A single slot forces the user to pick which fact to
+ * keep and throw the rest away.
+ *
+ * So: a list, each entry naming its own quantity, qualifier and unit.
+ * `unit` is a free string rather than an enum precisely because this has to
+ * be user-extensible — the app offers a suggestion list (see the app's
+ * PARAMETER_UNITS) but never rejects a unit it hasn't heard of, which is
+ * what "user-extensible" has to mean for a field whose whole job is to
+ * record whatever the datasheet actually says.
+ *
+ * Legacy `maxRating` values are converted to a single `{ name: 'Max rating',
+ * qualifier: 'max' }` parameter on load — see `migrateLegacyFields`.
+ */
+export type ParameterQualifier = 'nom' | 'min' | 'max' | 'typ' | 'abs';
+
+export interface PartParameter {
+  /** Stable id so the editor can key rows and reorder without remounting. */
+  id: string;
+  /** What quantity this is — "Voltage rating", "Operating temperature", … */
+  name: string;
+  qualifier: ParameterQualifier;
+  value: number;
+  /** Free text. 'V', 'A', 'degC', 'N·m', 'cycles' — whatever the datasheet says. */
+  unit: string;
+}
+
+export const PARAMETER_QUALIFIERS: { value: ParameterQualifier; label: string }[] = [
+  { value: 'nom', label: 'nom' },
+  { value: 'min', label: 'min' },
+  { value: 'max', label: 'max' },
+  { value: 'typ', label: 'typ' },
+  { value: 'abs', label: 'abs max' },
+];
+
+/** One-line rendering of a parameter, used by the BOM table, the BOM CSV and
+ * tooltips so all three read identically. */
+export function formatParameter(p: PartParameter): string {
+  const name = p.name.trim() || 'Parameter';
+  return `${name}: ${p.qualifier} ${p.value}${p.unit ? ` ${p.unit}` : ''}`;
+}
 
 export interface PartBase {
   id: PartId;
@@ -414,8 +647,8 @@ export interface PartBase {
   description?: string;
   url?: string;
   price?: number;
-  /** [inferred] — see MaxRatingUnit doc comment. */
-  maxRating?: { value: number; unit: MaxRatingUnit };
+  /** [inferred] — see PartParameter. Replaces the former single `maxRating`. */
+  parameters?: PartParameter[];
   source?: { provider: string; ref: string; fetchedAt: string };
   custom: Record<string, unknown>;
 }
@@ -478,6 +711,24 @@ export interface WirePart extends PartBase {
   voltageRating?: number;
   currentRating?: number;
   strandCount?: number;
+  /**
+   * [inferred] — Connor: "wire parts gain optional per-unit-length
+   * resistance and capacitance fields."
+   *
+   * Per the document's own `lengthUnit`, not per metre: the wire's BOM
+   * quantity is already authored and reported in that unit (see
+   * derive/bom.ts), so keeping these in the same unit means the parasitic
+   * total is a plain multiply against a length the user can see, with no
+   * hidden conversion to get wrong. Ω and F respectively, matching
+   * `Parasitics`.
+   *
+   * These live on the WirePart rather than on `Parasitics` because unlike a
+   * component's parasitics they are a property of the *purchased wire*, not
+   * of one instance of it: every wire cut from the same spool has the same
+   * Ω/length, and only the length differs.
+   */
+  resistancePerLength?: number;
+  capacitancePerLength?: number;
 }
 
 /** Confirmed directly against the live "Heat Shrink" part editor (spec §2.6/§4.5). */
@@ -560,9 +811,29 @@ export interface BomLine {
   extendedPrice?: number;
   /** Datasheet/vendor page — see PartBase.url. */
   url?: string;
-  maxRating?: { value: number; unit: MaxRatingUnit };
+  /** The part's own parameter list, carried through verbatim so the BOM
+   * table and CSV can render it without a second lookup into `doc.parts`. */
+  parameters?: PartParameter[];
   refdes: string[];
   warnings: string[];
+}
+
+/**
+ * [inferred] — per-wire parasitic totals (Connor: parasitics on components,
+ * and per-unit-length R/C on wire parts). Derived rather than authored: the
+ * numbers a user actually wants are `resistancePerLength × length`, and
+ * length is itself derived, so computing this anywhere but the derive
+ * pipeline would mean duplicating the length logic.
+ *
+ * `lengthKnown` is false when the wire's length status is `noRoute` or
+ * `unplaced` — the R/C figures are then 0 not because the wire is ideal but
+ * because there's no length to multiply, and a UI that showed a bare "0 Ω"
+ * for an unrouted wire would be actively misleading.
+ */
+export interface WireParasitics {
+  resistanceOhms: number;
+  capacitanceFarads: number;
+  lengthKnown: boolean;
 }
 
 /**
@@ -622,4 +893,7 @@ export interface DerivedModel {
   bom: BomLine[];
   diagnostics: Diagnostic[];
   interconnect: InterconnectRow[];
+  /** See WireParasitics. One entry per wire, always present (a wire with no
+   * part, or a part with no per-length figures, yields zeros). */
+  wireParasitics: Map<WireId, WireParasitics>;
 }

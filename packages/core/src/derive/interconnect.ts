@@ -24,6 +24,7 @@
 import type {
   HarnessDocument, Endpoint, InterconnectRow, SignalDirection, Component,
 } from '../types.js';
+import { BACKSHELL_CAVITY_ID } from '../types.js';
 
 interface EndpointDescriptor {
   componentId?: string;
@@ -37,8 +38,24 @@ interface EndpointDescriptor {
 function describeEndpoint(doc: HarnessDocument, ep: Endpoint): EndpointDescriptor {
   if (ep.kind === 'free') return { componentRefdes: '(free end)' };
 
+  // A shield termination node belongs to a WireGroup, not a Component, so it
+  // has no componentId to report — but it does have a name worth showing,
+  // since "SH1 shield" in the interconnect table is exactly what tells a
+  // reader that this row is the drain wire.
+  if (ep.kind === 'shieldNode') {
+    const group = doc.wireGroups[ep.groupId];
+    return { componentRefdes: `${group?.refdes ?? ep.groupId} shield`, designation: 'SHLD' };
+  }
+
   const component: Component | undefined = doc.components[ep.componentId];
   const componentRefdes = component?.refdes ?? ep.componentId;
+
+  if (ep.kind === 'cavity' && component?.type === 'connector' && ep.cavityId === BACKSHELL_CAVITY_ID) {
+    // Backshell termination — a real endpoint, but not one of the housing's
+    // cavities, so the cavity lookup below would find nothing and report a
+    // blank designation. Name it explicitly instead.
+    return { componentId: ep.componentId, componentRefdes, designation: 'BS' };
+  }
 
   if (ep.kind === 'cavity' && component?.type === 'connector') {
     const cavity = component.cavities.find((c) => c.id === ep.cavityId);

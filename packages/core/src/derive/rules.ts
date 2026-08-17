@@ -14,6 +14,7 @@
  */
 
 import type { HarnessDocument, Diagnostic, Net, RouteResult, BomLine } from '../types.js';
+import { BACKSHELL_CAVITY_ID } from '../types.js';
 import type { WireId, BundleId } from '../ids.js';
 import { resolveComponentHost } from './routing.js';
 
@@ -129,6 +130,10 @@ function overfilledCavity({ doc }: RuleInputs): Diagnostic[] {
   for (const wire of Object.values(doc.wires)) {
     for (const endpoint of [wire.source, wire.target]) {
       if (endpoint.kind !== 'cavity') continue;
+      // A backshell termination is not a cavity — it's a shell-level ground
+      // point, and taking several drain wires and ground straps at once is
+      // its normal, correct use, not an overfill. See BACKSHELL_CAVITY_ID.
+      if (endpoint.cavityId === BACKSHELL_CAVITY_ID) continue;
       const key = `${endpoint.componentId}:${endpoint.cavityId}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }

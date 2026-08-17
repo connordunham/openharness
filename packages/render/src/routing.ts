@@ -40,6 +40,10 @@ export interface RouteOptions {
   stub?: number;
 }
 
+/** Fallback when a caller passes no `stub` at all. Documents carry their own
+ * value in `settings.schematicExitStub` (core's `DEFAULT_EXIT_STUB`, which a
+ * test asserts equals this); this constant only covers direct callers of the
+ * geometry functions, such as the routing unit tests. */
 const DEFAULT_STUB = 14;
 
 function dx(dir: ExitDir): number {
@@ -152,6 +156,115 @@ export interface RoutedPath {
 export function computeRoutedPath(from: Point, fromDir: ExitDir, to: Point, toDir: ExitDir, opts: RouteOptions = {}): RoutedPath {
   const points = computeRoutePoints(from, fromDir, to, toDir, opts);
   return { points, d: pointsToPathD(points) };
+}
+
+/**
+ * A manually-routed path: the user's own bend points, with the two port
+ * stubs still enforced at either end (Connor: reimplement drag-to-bend).
+ *
+ * The stubs are deliberately NOT user-editable and are prepended/appended
+ * here rather than being stored as the first and last waypoints. A wire that
+ * leaves the *back* of a pin is simply a wrong drawing, not a style choice,
+ * and the auto-router has always guaranteed it can't happen (see this file's
+ * header, step 1). Manual routing takes over the middle of the run — where
+ * the user has real opinions about lane assignment and crossings — and
+ * leaves that guarantee intact.
+ *
+ * Segments between waypoints are straight lines, not 45°-constrained: the
+ * whole reason to drag a wire by hand is that the router's idea of a good
+ * path and yours differ, so re-imposing the router's geometry between your
+ * points would defeat the feature. `dedupeCollinear` still runs, so dragging
+ * a bend back onto the line it came from cleanly removes the corner instead
+ * of leaving a zero-angle artefact in the path data.
+ *
+ * An empty (or absent) waypoint list is not a special case for callers to
+ * guard: it produces exactly the stub-to-stub path, which is what the
+ * auto-router would draw for two aligned ports.
+ */
+export function computeManualRoutePoints(
+  from: Point,
+  fromDir: ExitDir,
+  to: Point,
+  toDir: ExitDir,
+  waypoints: readonly Point[],
+  opts: RouteOptions = {},
+): Point[] {
+  const stub = opts.stub ?? DEFAULT_STUB;
+  const s = { x: from.x + dx(fromDir) * stub, y: from.y };
+  const t = { x: to.x + dx(toDir) * stub, y: to.y };
+  return dedupeCollinear([from, s, ...waypoints.map((p) => ({ x: p.x, y: p.y })), t, to]);
+}
+
+/** `computeManualRoutePoints`, serialized — mirrors `computeRoutedPath`. */
+export function computeManualRoutedPath(
+  from: Point,
+  fromDir: ExitDir,
+  to: Point,
+  toDir: ExitDir,
+  waypoints: readonly Point[],
+  opts: RouteOptions = {},
+): RoutedPath {
+  const points = computeManualRoutePoints(from, fromDir, to, toDir, waypoints, opts);
+  return { points, d: pointsToPathD(points) };
+}
+
+/**
+ * Index of the segment of `points` that `p` lies nearest to, plus that
+ * distance. Used to decide where a newly-dragged bend belongs in an existing
+ * waypoint list: a bend created by grabbing the third segment has to be
+ * inserted third, or the path crosses itself the instant it's created.
+ *
+ * Returns the index of the segment's START point, so segment `i` runs from
+ * `points[i]` to `points[i + 1]`.
+ */
+export function nearestSegment(points: readonly Point[], p: Point): { index: number; distance: number } {
+  let best = { index: 0, distance: Infinity };
+  for (let i = 0; i < points.length - 1; i++) {
+    const d = distanceToSegment(p, points[i]!, points[i + 1]!);
+    if (d < best.distance) best = { index: i, distance: d };
+  }
+  return best;
+}
+
+function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const lenSq = abx * abx + aby * aby;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  // Projection parameter of p onto the infinite line, clamped to the segment.
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq));
+  return Math.hypot(p.x - (a.x + t * abx), p.y - (a.y + t * aby));
+}
+
+/**
+ * Where a new bend dropped at `p` belongs in `waypoints`, given the full
+ * rendered path it was dropped onto.
+ *
+ * The rendered path is `[from, sourceStub, ...waypoints, targetStub, to]`
+ * *before* `dedupeCollinear` runs — but the path a user clicks is the
+ * deduped one, so segment indices can't be mapped back by arithmetic alone.
+ * Instead this measures against a rebuilt, un-deduped path so the index
+ * arithmetic is exact, then converts: segment `i` of that path sits between
+ * waypoints `i - 1` and `i`, so the insertion index is `i - 1` clamped into
+ * range.
+ */
+export function waypointInsertIndex(
+  from: Point,
+  fromDir: ExitDir,
+  to: Point,
+  toDir: ExitDir,
+  waypoints: readonly Point[],
+  p: Point,
+  opts: RouteOptions = {},
+): number {
+  const stub = opts.stub ?? DEFAULT_STUB;
+  const s = { x: from.x + dx(fromDir) * stub, y: from.y };
+  const t = { x: to.x + dx(toDir) * stub, y: to.y };
+  const full = [from, s, ...waypoints, t, to];
+  const { index } = nearestSegment(full, p);
+  // full[0]=from, full[1]=sourceStub, full[2..]=waypoints. Segment 0 (from→stub)
+  // and segment 1 (stub→first waypoint) both mean "insert at the front".
+  return Math.max(0, Math.min(waypoints.length, index - 1));
 }
 
 /** Midpoint along a routed path's total length — used to anchor the wire

@@ -44,17 +44,25 @@ import { useEffect, useRef } from 'react';
 import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
   SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
-  ShieldPart, ShieldType, ShieldTermination, Part, SignalDirection,
+  ShieldPart, ShieldType, ShieldTermination, Shield, ShieldModel, Part, SignalDirection, Parasitics,
 } from '@openharness/core';
-import { newInstanceId, newPartId } from '@openharness/core';
-import { computeSchematicScene, type SceneNode, type SceneRow, type SceneWire, ROW_HEIGHT, HEADER_HEIGHT } from '@openharness/render';
+import {
+  newInstanceId, newPartId, endpointComponentId, formatSi,
+  DEFAULT_SHIELD_POSITION, BACKSHELL_CAVITY_ID,
+} from '@openharness/core';
+import {
+  computeSchematicScene, collectGroupMembers, shieldTerminationMarks, twistCrossoverPaths,
+  waypointInsertIndex, type SceneNode, type SceneRow, type SceneWire,
+  ROW_HEIGHT, HEADER_HEIGHT,
+} from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid, autoRouteInLayout } from './layoutGrid.js';
 import { nextGridPosition, nextRefdes } from './schematicGrid.js';
 import { useCanvasPan } from './canvasPan.js';
-import { SHIELD_TYPES, SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
-import { PartCommonFields } from './partFields.js';
+import { SHIELD_TYPES, SHIELD_TERMINATION_STYLES, SHIELD_MODELS } from './shieldConstants.js';
+import { PartCommonFields, ParasiticsFields } from './partFields.js';
+import { SYMBOL_NODE_TYPES, renderNodeSymbol } from './schematicSymbols.js';
 
 interface Props {
   store: HarnessStore;
@@ -77,11 +85,21 @@ interface Props {
   hoveredBundleId?: string | null;
 }
 
+/**
+ * A wire being drawn. `componentId`/`rowId` identify the clicked port so a
+ * second click on the same port cancels; for a shield termination node there
+ * is no component, so `componentId` carries the group id and `rowId` the
+ * reserved SHIELD_ROW marker — the equality check that drives "click the
+ * same port again to cancel" only needs the pair to be unique, not to name a
+ * real component.
+ */
 interface PendingWire {
   componentId: string;
   rowId: string;
   endpoint: Endpoint;
 }
+
+const SHIELD_ROW = '__shieldNode__';
 
 type Selection =
   | { kind: 'component'; id: string }
@@ -98,6 +116,43 @@ interface Dragging {
   boxStartX: number;
   boxStartY: number;
 }
+
+/**
+ * An in-progress drag of one manual wire bend (Connor: reimplement
+ * drag-to-bend).
+ *
+ * `index` is the position in `Wire.schematicWaypoints`, and the waypoint is
+ * already in the document by the time this state exists — grabbing a fresh
+ * segment inserts the bend first (see `beginBend`), so dragging an existing
+ * bend and dragging a newly-created one are the same code path from here on.
+ */
+interface BendDrag {
+  wireId: string;
+  index: number;
+}
+
+/**
+ * A left-drag on empty canvas that hasn't yet been classified. A bend is
+ * only created once the pointer actually moves past DRAG_THRESHOLD, so a
+ * plain click on a wire still just selects it instead of silently littering
+ * the route with zero-offset bends.
+ */
+interface PendingBend {
+  wireId: string;
+  origin: Point;
+  insertIndex: number;
+}
+
+/** Marquee (lasso) selection rectangle, in canvas coordinates. */
+interface Lasso {
+  origin: Point;
+  current: Point;
+  /** Shift-drag adds to the existing selection instead of replacing it. */
+  additive: boolean;
+}
+
+/** Pointer travel (px) that separates a click from a drag. */
+const DRAG_THRESHOLD = 3;
 
 interface ContextMenuState {
   x: number;
@@ -133,277 +188,98 @@ const WIRE_COLORS = [
   'Black', 'Red', 'White', 'Green', 'Blue', 'Yellow', 'Orange', 'Brown', 'Violet', 'Gray', 'Tan', 'Pink',
 ] as const;
 
+/**
+ * Multi-selection is a flat `Set<string>` of `kind:id` keys rather than a
+ * set of tagged objects, because a Set of objects can't dedupe by value —
+ * shift-clicking the same wire twice would add two entries. Components join
+ * wires and groups in this space now (Connor: "extend shift-click to any
+ * component type, currently it only works on wires/groups"), which is why
+ * `parseKey`'s union grew a third member.
+ */
+type SelectableKind = 'wire' | 'group' | 'component';
+
 function wireKey(id: string): string {
   return `wire:${id}`;
 }
 function groupKey(id: string): string {
   return `group:${id}`;
 }
-function parseKey(key: string): { kind: 'wire' | 'group'; id: string } | null {
+function componentKey(id: string): string {
+  return `component:${id}`;
+}
+function parseKey(key: string): { kind: SelectableKind; id: string } | null {
   const i = key.indexOf(':');
   if (i < 0) return null;
   const kind = key.slice(0, i);
-  if (kind !== 'wire' && kind !== 'group') return null;
+  if (kind !== 'wire' && kind !== 'group' && kind !== 'component') return null;
   return { kind, id: key.slice(i + 1) };
 }
 
-/** How far a shield termination ellipse sits inset from the connector face
- * (see `shieldTerminations`) — also the outer bound for `TWIST_ZONE_LEN`
- * below, so a twist crossover glyph never reaches far enough to collide
- * with a shield mark on the same wire. */
-const SHIELD_INSET = 26;
+/**
+ * Delete a wire and tidy up the group it belonged to. Shared by the
+ * single-selection and multi-selection delete paths so the group cleanup —
+ * drop the membership, and drop the group entirely once it has no members
+ * left — can't be implemented once and forgotten in the other.
+ */
+function deleteWireInDraft(draft: HarnessDocument, wireId: string): void {
+  const wire = draft.wires[wireId];
+  const gid = wire?.twistGroupId;
+  delete draft.wires[wireId];
+  if (!gid) return;
+  const group = draft.wireGroups[gid];
+  if (!group) return;
+  group.memberWireIds = group.memberWireIds.filter((id) => id !== wireId);
+  if (group.memberWireIds.length === 0 && group.memberGroupIds.length === 0) delete draft.wireGroups[gid];
+}
 
-/** Length (px, along each wire's own route) of the twisted-pair crossover
- * glyph at each connector exit — kept comfortably under `SHIELD_INSET` so it
- * always fits between the connector and a shield mark, per Connor: "as
- * short as possible so it fits between the shield and the connector". */
-const TWIST_ZONE_LEN = 16;
-
-/** Point at cumulative arc length `targetLen` along a polyline, starting
- * from `points[0]` — used to find where a twist crossover glyph should
- * rejoin the wire's real, un-perturbed path. Clamps to the last point if
- * the wire is shorter than `targetLen` (a very short run between adjacent
- * components). */
-function pointAtArcLength(points: Point[], targetLen: number): Point {
-  if (points.length === 0) return { x: 0, y: 0 };
-  if (points.length === 1) return points[0]!;
-  let remaining = targetLen;
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i]!;
-    const b = points[i + 1]!;
-    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
-    if (segLen === 0) continue;
-    if (remaining <= segLen) {
-      const t = remaining / segLen;
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+/** Delete a component and every wire that lands on it. */
+function deleteComponentInDraft(draft: HarnessDocument, componentId: string): void {
+  delete draft.components[componentId];
+  for (const [wireId, wire] of Object.entries(draft.wires)) {
+    if (endpointComponentId(wire.source) === componentId || endpointComponentId(wire.target) === componentId) {
+      deleteWireInDraft(draft, wireId);
     }
-    remaining -= segLen;
-  }
-  return points[points.length - 1]!;
-}
-
-/** Twisted-pair visual (Connor: "show twisted pairs as twisted wires...
- * with the wires crossing over back and forth once right at the connector
- * exit... as short as possible so it fits between the shield and the
- * connector"). A previous full-length sinusoidal overlay read as a
- * continuous twist along the whole run rather than a localized cue at the
- * termination — this instead draws one short "X" crossover glyph at EACH
- * end where the group's members leave a connector: adjacent members (by
- * their actual pin order at that end) swap sides once, over `TWIST_ZONE_LEN`
- * px, then the glyph ends exactly where the real, straight wire trace
- * resumes (the underlying trace/hit-target is never touched). Only draws
- * anything for 2+ members — a lone wire can't twist around itself. */
-function twistCrossoverPaths(members: SceneWire[], end: 'from' | 'to'): string[] {
-  if (members.length < 2) return [];
-  const anchors = members.map((m) => {
-    const pts = end === 'from' ? m.routePoints : [...m.routePoints].reverse();
-    return { pin: pts[0]!, zoneEnd: pointAtArcLength(pts, TWIST_ZONE_LEN) };
-  });
-  // Order by lateral (row) position so adjacent-in-space members cross with
-  // each other, not with whichever member happens to be next in the array.
-  const order = anchors
-    .map((a, i) => ({ i, key: a.pin.y }))
-    .sort((a, b) => a.key - b.key)
-    .map((o) => o.i);
-
-  const paths: string[] = [];
-  for (let k = 0; k < order.length - 1; k++) {
-    const a = anchors[order[k]!]!;
-    const b = anchors[order[k + 1]!]!;
-    // `a` swings over to where `b` straightens out, and vice versa — a
-    // single crossing, each back on its own row by TWIST_ZONE_LEN out.
-    paths.push(`M ${a.pin.x} ${a.pin.y} L ${b.zoneEnd.x} ${b.zoneEnd.y}`);
-    paths.push(`M ${b.pin.x} ${b.pin.y} L ${a.zoneEnd.x} ${a.zoneEnd.y}`);
-  }
-  return paths;
-}
-
-/** Component types drawn as real schematic symbols instead of the generic
- * labeled box (Connor: "improve the other components. add them as symbols
- * in the schematic instead of generic blocks"). Each of these already had a
- * tiny 16x16 decorative icon in `icons.tsx`, but the actual node body was
- * still just a plain rounded rectangle — this scales that same symbol
- * language up to be the node itself, the same move Layout's `connectorGlyph`
- * already made for connectors (see LayoutCanvas.tsx). `connector`/`cable`/
- * `generic` keep the labeled-box treatment: a connector's cavity list and a
- * cable's core list both need real row space a symbol can't provide, and
- * `generic` has no more specific shape to draw. */
-const SYMBOL_NODE_TYPES = new Set<Component['type']>(['splice', 'terminal', 'resistor', 'diode']);
-
-/** Splice symbol: a straight through-wire with a junction dot at the
- * midpoint — the standard schematic convention for "these wires are
- * electrically the same node," matching the two-port L/R shape
- * schematicScene.ts already gives a Splice component. */
-function spliceSymbol(x: number, y: number, w: number, h: number) {
-  const cy = y + h / 2;
-  return { lineD: `M ${x} ${cy} L ${x + w} ${cy}`, dotCx: x + w / 2, dotCy: cy, dotR: Math.min(h * 0.28, 5) };
-}
-
-/** Terminal symbol: a stub lead into a ring — the single-port lug shape
- * (spec §7.2's "ring terminal"), reused for every TerminalKind since the
- * kind itself is already surfaced as text via SceneRow.label. Ports sit on
- * the right unless flipped (see schematicScene.ts's Terminal handling). */
-function terminalSymbol(x: number, y: number, w: number, h: number, flipped: boolean) {
-  const cy = y + h / 2;
-  const ringR = Math.min(h * 0.34, 6.5);
-  const ringCx = flipped ? x + w * 0.28 : x + w * 0.72;
-  const leadFrom = flipped ? x + w : x;
-  const leadTo = flipped ? ringCx + ringR : ringCx - ringR;
-  return { leadD: `M ${leadFrom} ${cy} L ${leadTo} ${cy}`, ringCx, ringCy: cy, ringR };
-}
-
-/** Resistor symbol: the classic zigzag between two stub leads — geometry
- * lifted directly from the ComponentIcon 'resistor' glyph (icons.tsx) and
- * rescaled from its fixed 16x16 icon space to the node's actual (x,y,w,h),
- * so the full-size schematic symbol and the small toolbar/header icon read
- * as the same shape at different sizes. */
-function resistorSymbol(x: number, y: number, w: number, h: number) {
-  const cy = y + h / 2;
-  const amp = Math.min(h * 0.4375, 8);
-  const zx0 = x + w * 0.219;
-  const zx1 = x + w * 0.781;
-  const fr = [0, 0.167, 0.389, 0.611, 0.833, 1];
-  const pts = fr.map((f, i) => {
-    const px = zx0 + (zx1 - zx0) * f;
-    const py = i === 0 || i === fr.length - 1 ? cy : i % 2 === 1 ? cy - amp : cy + amp;
-    return `${px},${py}`;
-  });
-  return {
-    leftStubD: `M ${x} ${cy} L ${zx0} ${cy}`,
-    zigzagPoints: pts.join(' '),
-    rightStubD: `M ${zx1} ${cy} L ${x + w} ${cy}`,
-  };
-}
-
-/** Diode symbol: triangle + cathode bar, also lifted from the ComponentIcon
- * 'diode' glyph and rescaled the same way as resistorSymbol. `reverse`
- * mirrors the whole shape left-right so `TwoTerminal.polarity === 'reverse'`
- * (already a field on the data model, previously invisible in the
- * schematic) actually shows up as a flipped diode instead of only being
- * readable from the Edit tab's dropdown. */
-function diodeSymbol(x: number, y: number, w: number, h: number, reverse: boolean) {
-  const cy = y + h / 2;
-  const amp = Math.min(h * 0.4375, 8);
-  const baseF = reverse ? 0.6875 : 0.3125;
-  const apexF = reverse ? 0.344 : 0.656;
-  const baseX = x + w * baseF;
-  const apexX = x + w * apexF;
-  return {
-    leftStubD: `M ${x} ${cy} L ${Math.min(baseX, apexX)} ${cy}`,
-    trianglePoints: `${baseX},${cy - amp} ${baseX},${cy + amp} ${apexX},${cy}`,
-    barD: `M ${apexX} ${cy - amp} L ${apexX} ${cy + amp}`,
-    rightStubD: `M ${Math.max(baseX, apexX)} ${cy} L ${x + w} ${cy}`,
-  };
-}
-
-/** Renders the actual symbol for one SYMBOL_NODE_TYPES node — a plain
- * function (not a component) so it can be called directly inside the
- * scene.nodes.map JSX without an extra component-boundary/key wrapper. */
-function renderNodeSymbol(node: SceneNode, color: string, doc: HarnessDocument) {
-  const { x, y, width: w, height: h } = node;
-  const strokeProps = { stroke: color, strokeWidth: 1.6, style: { pointerEvents: 'none' as const } };
-  switch (node.type) {
-    case 'splice': {
-      const sym = spliceSymbol(x, y, w, h);
-      return (
-        <g>
-          <path d={sym.lineD} fill="none" {...strokeProps} />
-          <circle cx={sym.dotCx} cy={sym.dotCy} r={sym.dotR} fill={color} style={{ pointerEvents: 'none' }} />
-        </g>
-      );
-    }
-    case 'terminal': {
-      const component = doc.components[node.componentId];
-      const flipped = component?.type === 'terminal' && component.flipped === true;
-      const sym = terminalSymbol(x, y, w, h, flipped);
-      return (
-        <g>
-          <path d={sym.leadD} fill="none" {...strokeProps} />
-          <circle cx={sym.ringCx} cy={sym.ringCy} r={sym.ringR} fill="none" {...strokeProps} />
-        </g>
-      );
-    }
-    case 'resistor': {
-      const sym = resistorSymbol(x, y, w, h);
-      return (
-        <g>
-          <path d={sym.leftStubD} fill="none" {...strokeProps} />
-          <polyline points={sym.zigzagPoints} fill="none" strokeLinejoin="round" {...strokeProps} />
-          <path d={sym.rightStubD} fill="none" {...strokeProps} />
-        </g>
-      );
-    }
-    case 'diode': {
-      const component = doc.components[node.componentId];
-      const reverse = component?.type === 'diode' && component.polarity === 'reverse';
-      const sym = diodeSymbol(x, y, w, h, reverse);
-      return (
-        <g>
-          <path d={sym.leftStubD} fill="none" {...strokeProps} />
-          <polygon points={sym.trianglePoints} fill="none" strokeLinejoin="round" {...strokeProps} />
-          <path d={sym.barD} fill="none" {...strokeProps} />
-          <path d={sym.rightStubD} fill="none" {...strokeProps} />
-        </g>
-      );
-    }
-    default:
-      return null;
   }
 }
 
-/** One shield termination mark — a dashed ellipse encircling the group's
- * member wires near one end of the run, plus the point its label sits at,
- * and which physical end (`from`/`to`) it represents (so the render pass
- * can look up that end's termination style/note — a shield's two ends can
- * terminate differently, e.g. a pigtail at one connector and a drain wire
- * at the other, but `WireGroup.shield.termination` is a single field today;
- * see the render pass for how that's handled). See `shieldTerminations`
- * below for how the two (one per end) are built. */
-interface ShieldTerminationMark {
-  center: Point;
-  rx: number;
-  ry: number;
-  labelPoint: Point;
-  /** Which way the mark is inset from its connector face (+1/-1 along x) —
-   * used to orient the small termination-style glyph (pigtail/lug/drain)
-   * so it points outward from the ellipse, away from the open wire span. */
-  dir: 1 | -1;
+/** The termination detail for one end of a shield: that end's own override
+ * if set, otherwise the shield's shared default. Kept as a function rather
+ * than inlined at its two call sites (the canvas and the inspector) so the
+ * fallback rule can't drift between what gets drawn and what gets edited. */
+function terminationForEnd(shield: Shield, end: 'source' | 'target'): ShieldTermination | undefined {
+  return (end === 'source' ? shield.sourceTermination : shield.targetTermination) ?? shield.termination;
 }
 
-/** Shield termination marks (Connor: "shields should appear ... at each
- * end" / "should show how shield terminations [are done]") — a dashed
- * ellipse encircling the shielded group's member wires near EACH end of the
- * run, not a shaded tube running the full length. Built straight from each
- * member wire's own `from`/`to` endpoint (already resolved by the routing
- * engine, per-row), rather than the routed path, since what needs encircling
- * is "the wires at this end", not a point along a bend. The ellipse sits
- * offset inward from the connector face by `INSET` so it doesn't overlap the
- * node itself — matching the reference image, where the dashed oval sits a
- * short distance out from the pins, not right on them. (The render pass
- * that uses this still draws AFTER every node box, specifically so a mark
- * that ends up geometrically close to a connector — e.g. a short wire run —
- * is never hidden behind it.) */
-function shieldTerminations(members: SceneWire[]): ShieldTerminationMark[] {
-  if (members.length === 0) return [];
-  const INSET = SHIELD_INSET;
-  const build = (pick: (w: SceneWire) => Point, otherPick: (w: SceneWire) => Point): ShieldTerminationMark => {
-    const pts = members.map(pick);
-    const others = members.map(otherPick);
-    const minY = Math.min(...pts.map((p) => p.y));
-    const maxY = Math.max(...pts.map((p) => p.y));
-    const avgX = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-    const avgOtherX = others.reduce((s, p) => s + p.x, 0) / others.length;
-    const avgY = (minY + maxY) / 2;
-    const dir: 1 | -1 = avgOtherX >= avgX ? 1 : -1; // inset toward the other end
-    return {
-      center: { x: avgX + dir * INSET, y: avgY },
-      rx: 15,
-      ry: Math.max(16, (maxY - minY) / 2 + 9),
-      labelPoint: { x: avgX + dir * INSET, y: minY - 12 },
-      dir,
-    };
-  };
-  return [build((w) => w.from, (w) => w.to), build((w) => w.to, (w) => w.from)];
+/** Axis-aligned box from two corners, in either drag direction. */
+function lassoRect(l: Lasso): { x: number; y: number; width: number; height: number } {
+  const x = Math.min(l.origin.x, l.current.x);
+  const y = Math.min(l.origin.y, l.current.y);
+  return { x, y, width: Math.abs(l.current.x - l.origin.x), height: Math.abs(l.current.y - l.origin.y) };
+}
+
+function rectContainsPoint(r: { x: number; y: number; width: number; height: number }, p: Point): boolean {
+  return p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
+}
+
+function rectIntersectsRect(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return a.x <= b.x + b.width && a.x + a.width >= b.x && a.y <= b.y + b.height && a.y + a.height >= b.y;
+}
+
+/**
+ * A wire is lassoed when ANY point of its routed path falls inside the
+ * marquee — not when the whole path does.
+ *
+ * Requiring full containment sounds tidier and is wrong in practice: a wire
+ * runs between two connectors, so a marquee that fully contains the wire
+ * almost always contains both connectors too, and there'd be no way to
+ * select a group of wires without also selecting everything they attach to.
+ * Touch-selection is also what every schematic tool does for traces.
+ */
+function wireTouchesRect(w: SceneWire, r: { x: number; y: number; width: number; height: number }): boolean {
+  return w.routePoints.some((p) => rectContainsPoint(r, p));
 }
 
 function rowEndpoint(node: SceneNode, row: SceneRow): Endpoint {
@@ -422,13 +298,6 @@ function rowEndpoint(node: SceneNode, row: SceneRow): Endpoint {
     default:
       return { kind: 'free', point: row.point };
   }
-}
-
-/** Component id an Endpoint resolves to, or undefined for a `free` endpoint
- * (a floating point with no component at all) — used by `autoRouteInLayout`
- * below to find the two components a freshly-drawn wire actually connects. */
-function endpointComponentId(ep: Endpoint): string | undefined {
-  return ep.kind === 'free' ? undefined : ep.componentId;
 }
 
 /** Click-to-cycle order for the schematic row's direction toggle (Connor:
@@ -582,8 +451,32 @@ export function SchematicCanvas({
   // after creating a new part via the toolbar, where showing the editor
   // immediately is the whole point of clicking "Add".
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  // Manual wire routing (drag-to-bend) and marquee selection. `pendingBend`
+  // is a ref, not state: it's read and cleared inside the mousemove handler
+  // on the very first move event, and routing it through a state update
+  // would mean the handler that needs it still sees the previous render's
+  // value on that first move.
+  const [bendDrag, setBendDrag] = useState<BendDrag | null>(null);
+  const pendingBend = useRef<PendingBend | null>(null);
+  const [lasso, setLasso] = useState<Lasso | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const { onBackgroundMouseDown } = useCanvasPan(scrollRef);
+
+  /**
+   * Pointer position in canvas (SVG user) coordinates.
+   *
+   * Reads the SVG's own bounding rect rather than using the scroll
+   * container's `scrollLeft`/`scrollTop`, so it stays correct regardless of
+   * how the canvas is positioned inside its scroller — and would keep
+   * working unchanged if a zoom transform were ever added, since a CSS/SVG
+   * transform is already reflected in `getBoundingClientRect`.
+   */
+  const clientToCanvas = useCallback((clientX: number, clientY: number): Point => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: clientX, y: clientY };
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }, []);
 
   const scene = computeSchematicScene(store.doc);
   const selectedComponent = selected?.kind === 'component' ? store.doc.components[selected.id] : undefined;
@@ -609,6 +502,26 @@ export function SchematicCanvas({
     return map;
   }, [scene.wires, store.doc.wires]);
 
+  /**
+   * Like `wiresByGroup`, but following nested `memberGroupIds` — a shield on
+   * a jacketed cable containing two twisted pairs has no direct member wires
+   * of its own, so the direct map above returns nothing for it and its
+   * termination mark would silently fail to draw. The halo and twist glyph
+   * deliberately keep using the direct map: a nested group draws its own
+   * halo, and stacking the parent's on top would double every line.
+   */
+  const deepWiresByGroup = useMemo(() => {
+    const byId = new Map(scene.wires.map((w) => [w.wireId, w]));
+    const map = new Map<string, SceneWire[]>();
+    for (const group of Object.values(store.doc.wireGroups)) {
+      const members = collectGroupMembers(store.doc, group, new Set())
+        .map((id) => byId.get(id))
+        .filter((w): w is SceneWire => !!w);
+      if (members.length > 0) map.set(group.id, members);
+    }
+    return map;
+  }, [scene.wires, store.doc]);
+
   // Cross-pane wire/bundle highlighting (Connor: "if I highlight a bundle, I
   // want all wires that route through that point to be highlighted and all
   // relevant connectors highlighted"). A hovered bundle (from Layout)
@@ -631,8 +544,10 @@ export function SchematicCanvas({
     for (const wireId of highlightedWireIds) {
       const w = store.doc.wires[wireId];
       if (!w) continue;
-      if (w.source.kind !== 'free') ids.add(w.source.componentId);
-      if (w.target.kind !== 'free') ids.add(w.target.componentId);
+      const src = endpointComponentId(w.source);
+      const tgt = endpointComponentId(w.target);
+      if (src) ids.add(src);
+      if (tgt) ids.add(tgt);
     }
     return ids;
   }, [highlightedWireIds, store.doc.wires]);
@@ -804,52 +719,158 @@ export function SchematicCanvas({
       if (next.size > 0) return;
       if (selected?.kind === 'wire') next.add(wireKey(selected.id));
       else if (selected?.kind === 'group') next.add(groupKey(selected.id));
+      else if (selected?.kind === 'component') next.add(componentKey(selected.id));
     },
     [selected],
   );
+
+  /**
+   * The one shift-click path for every selectable kind. Previously each kind
+   * had its own near-identical handler and only wires and groups had one at
+   * all, which is exactly why shift-clicking a connector did nothing
+   * (Connor: "extend shift-click to any component type").
+   */
+  const toggleInMultiSelect = useCallback(
+    (key: string) => {
+      setMultiSelect((prev) => {
+        const next = new Set(prev);
+        seedMultiSelectFromSingle(next);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+      });
+    },
+    [seedMultiSelectFromSingle],
+  );
+
+  const selectSingle = useCallback((sel: NonNullable<Selection>) => {
+    setMultiSelect(new Set());
+    setSelected(sel);
+    setInspectorTab('edit');
+    setInspectorOpen(false);
+  }, []);
 
   const onWireClick = useCallback(
     (wireId: string, e: React.MouseEvent) => {
       e.stopPropagation();
       setContextMenu(null);
-      if (e.shiftKey) {
-        setMultiSelect((prev) => {
-          const next = new Set(prev);
-          seedMultiSelectFromSingle(next);
-          const key = wireKey(wireId);
-          if (next.has(key)) next.delete(key); else next.add(key);
-          return next;
-        });
-        return;
-      }
-      setMultiSelect(new Set());
-      setSelected({ kind: 'wire', id: wireId });
-      setInspectorTab('edit');
-      setInspectorOpen(false);
+      if (e.shiftKey) { toggleInMultiSelect(wireKey(wireId)); return; }
+      selectSingle({ kind: 'wire', id: wireId });
     },
-    [seedMultiSelectFromSingle],
+    [toggleInMultiSelect, selectSingle],
   );
 
   const onGroupHaloClick = useCallback(
     (groupId: string, e: React.MouseEvent) => {
       e.stopPropagation();
       setContextMenu(null);
-      if (e.shiftKey) {
-        setMultiSelect((prev) => {
-          const next = new Set(prev);
-          seedMultiSelectFromSingle(next);
-          const key = groupKey(groupId);
-          if (next.has(key)) next.delete(key); else next.add(key);
-          return next;
-        });
+      if (e.shiftKey) { toggleInMultiSelect(groupKey(groupId)); return; }
+      selectSingle({ kind: 'group', id: groupId });
+    },
+    [toggleInMultiSelect, selectSingle],
+  );
+
+  // ---------------------------------------------------------------------
+  // Manual wire routing — drag-to-bend
+  // ---------------------------------------------------------------------
+
+  /**
+   * Mousedown on a wire's hit-target. This does NOT create a bend: it only
+   * records where the pointer went down and which segment it landed on. The
+   * bend is created on the first mousemove past DRAG_THRESHOLD (see
+   * `onMouseMove`), so a plain click still selects the wire rather than
+   * dropping an invisible zero-offset bend into the route every time anyone
+   * clicks a trace.
+   */
+  const onWireMouseDown = useCallback(
+    (wireId: string, e: React.MouseEvent) => {
+      if (e.button !== 0 || e.shiftKey) return;
+      e.stopPropagation();
+      const wire = store.doc.wires[wireId];
+      const sceneWire = scene.wires.find((w) => w.wireId === wireId);
+      if (!wire || !sceneWire || sceneWire.degraded) return;
+      const origin = clientToCanvas(e.clientX, e.clientY);
+      const insertIndex = waypointInsertIndex(
+        sceneWire.from, sceneWire.fromDir, sceneWire.to, sceneWire.toDir,
+        wire.schematicWaypoints ?? [], origin,
+        store.doc.settings.schematicExitStub === undefined ? {} : { stub: store.doc.settings.schematicExitStub },
+      );
+      pendingBend.current = { wireId, origin, insertIndex };
+    },
+    [store.doc, scene.wires, clientToCanvas],
+  );
+
+  const removeBend = useCallback(
+    (wireId: string, index: number) => {
+      store.transact('Remove wire bend', (draft) => {
+        const w = draft.wires[wireId];
+        if (!w?.schematicWaypoints) return;
+        w.schematicWaypoints.splice(index, 1);
+        // Back to fully auto-routed once the last bend is gone. Storing an
+        // empty array instead would be a second way to spell "auto", and the
+        // scene builder would have to know about both.
+        if (w.schematicWaypoints.length === 0) w.schematicWaypoints = undefined;
+      });
+    },
+    [store],
+  );
+
+  /** Mousedown directly on an existing bend handle — no threshold needed,
+   * the user has unambiguously grabbed a specific bend. */
+  const onBendMouseDown = useCallback(
+    (wireId: string, index: number, e: React.MouseEvent) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      // Alt-click removes the bend instead of moving it — the standard
+      // "alt to delete a node" gesture from path editors, and the reason
+      // there's no separate delete affordance cluttering each handle.
+      if (e.altKey) { removeBend(wireId, index); return; }
+      setContextMenu(null);
+      setSelected({ kind: 'wire', id: wireId });
+      setBendDrag({ wireId, index });
+    },
+    [removeBend],
+  );
+
+  const clearBends = useCallback(
+    (wireId: string) => {
+      store.transact('Auto-route wire', (draft) => {
+        const w = draft.wires[wireId];
+        if (w) w.schematicWaypoints = undefined;
+      });
+    },
+    [store],
+  );
+
+  /**
+   * Clicking a shield's termination node starts (or finishes) a wire the
+   * same way clicking a cavity does — it feeds the identical `pendingWire`
+   * state machine, so a drain wire is an ordinary wire in every respect
+   * afterwards: it appears in nets, in the interconnect table, and in the
+   * BOM. The only thing special about it is its endpoint kind.
+   */
+  const onShieldNodeClick = useCallback(
+    (groupId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      const endpoint: Endpoint = { kind: 'shieldNode', groupId };
+      if (!pendingWire) {
+        setPendingWire({ componentId: groupId, rowId: SHIELD_ROW, endpoint });
         return;
       }
-      setMultiSelect(new Set());
-      setSelected({ kind: 'group', id: groupId });
-      setInspectorTab('edit');
-      setInspectorOpen(false);
+      if (pendingWire.componentId === groupId && pendingWire.rowId === SHIELD_ROW) {
+        setPendingWire(null);
+        return;
+      }
+      store.transact('Add shield drain wire', (draft) => {
+        const id = newInstanceId();
+        const n = Object.values(draft.wires).length;
+        draft.wires[id] = {
+          id, refdes: `W${n + 1}`, color: 'Green',
+          source: pendingWire.endpoint, target: endpoint, custom: {},
+        };
+      });
+      setPendingWire(null);
     },
-    [seedMultiSelectFromSingle],
+    [pendingWire, store],
   );
 
   const groupSelection = useCallback(() => {
@@ -940,6 +961,11 @@ export function SchematicCanvas({
     (node: SceneNode, e: React.MouseEvent) => {
       e.stopPropagation();
       setContextMenu(null);
+      // Shift-click extends the selection instead of starting a drag
+      // (Connor: "extend shift-click to any component type"). Starting a
+      // drag as well would move the node the instant the user nudged the
+      // mouse while building a selection.
+      if (e.shiftKey) { toggleInMultiSelect(componentKey(node.componentId)); return; }
       select({ kind: 'component', id: node.componentId });
       setDragging({
         kind: 'component', id: node.componentId,
@@ -947,7 +973,7 @@ export function SchematicCanvas({
         boxStartX: node.x, boxStartY: node.y,
       });
     },
-    [select],
+    [select, toggleInMultiSelect],
   );
 
   const onNodeContextMenu = useCallback((node: SceneNode, e: React.MouseEvent) => {
@@ -994,8 +1020,65 @@ export function SchematicCanvas({
     [select],
   );
 
+  /**
+   * Left-drag on empty canvas is a marquee selection (Connor: "lasso-drag to
+   * select multiple wires").
+   *
+   * Panning moves to ALT+drag and middle-drag, which `useCanvasPan` now
+   * accepts. Two gestures can't both own plain left-drag on the background,
+   * and lassoing is the one being asked for; panning keeps the mouse wheel
+   * and the scrollbars besides. `stopPropagation` is what actually prevents
+   * the pan handler on the scroll container from also firing.
+   */
+  const onBackgroundDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0 || e.altKey) return; // let it bubble to useCanvasPan
+      e.stopPropagation();
+      const origin = clientToCanvas(e.clientX, e.clientY);
+      setContextMenu(null);
+      setLasso({ origin, current: origin, additive: e.shiftKey });
+    },
+    [clientToCanvas],
+  );
+
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      if (lasso) {
+        setLasso({ ...lasso, current: clientToCanvas(e.clientX, e.clientY) });
+        return;
+      }
+
+      // A wire mousedown that has now travelled far enough to be a drag:
+      // create the bend and hand off to the bend-drag branch below. Doing
+      // this here rather than on mousedown is what keeps a plain click on a
+      // trace from silently inserting a bend.
+      const pending = pendingBend.current;
+      if (pending && !bendDrag) {
+        const p = clientToCanvas(e.clientX, e.clientY);
+        if (Math.abs(p.x - pending.origin.x) > DRAG_THRESHOLD || Math.abs(p.y - pending.origin.y) > DRAG_THRESHOLD) {
+          store.transact('Bend wire', (draft) => {
+            const w = draft.wires[pending.wireId];
+            if (!w) return;
+            if (!w.schematicWaypoints) w.schematicWaypoints = [];
+            w.schematicWaypoints.splice(pending.insertIndex, 0, p);
+          });
+          setBendDrag({ wireId: pending.wireId, index: pending.insertIndex });
+          pendingBend.current = null;
+          return;
+        }
+      }
+
+      if (bendDrag) {
+        const p = clientToCanvas(e.clientX, e.clientY);
+        store.transact('Move wire bend', (draft) => {
+          const w = draft.wires[bendDrag.wireId];
+          const wp = w?.schematicWaypoints;
+          if (!wp || !wp[bendDrag.index]) return;
+          wp[bendDrag.index] = p;
+        });
+        return;
+      }
+
       if (!dragging) return;
       const dx = e.clientX - dragging.pointerStartX;
       const dy = e.clientY - dragging.pointerStartY;
@@ -1013,10 +1096,51 @@ export function SchematicCanvas({
         });
       }
     },
-    [dragging, store],
+    [dragging, store, lasso, bendDrag, clientToCanvas],
   );
 
-  const onMouseUp = useCallback(() => setDragging(null), []);
+  /** Everything the marquee currently covers, as multi-select keys. */
+  const lassoHits = useCallback(
+    (l: Lasso): string[] => {
+      const r = lassoRect(l);
+      const keys: string[] = [];
+      for (const w of scene.wires) {
+        if (!w.degraded && wireTouchesRect(w, r)) keys.push(wireKey(w.wireId));
+      }
+      for (const n of scene.nodes) {
+        if (rectIntersectsRect(r, { x: n.x, y: n.y, width: n.width, height: n.height })) {
+          keys.push(componentKey(n.componentId));
+        }
+      }
+      return keys;
+    },
+    [scene.wires, scene.nodes],
+  );
+
+  const onMouseUp = useCallback(() => {
+    if (lasso) {
+      const r = lassoRect(lasso);
+      // A marquee that never actually opened is a click on empty canvas —
+      // deselect, matching what clicking the background did before lassoing
+      // existed.
+      if (r.width < DRAG_THRESHOLD && r.height < DRAG_THRESHOLD) {
+        setSelected(null);
+        setMultiSelect(new Set());
+      } else {
+        const hits = lassoHits(lasso);
+        setMultiSelect((prev) => {
+          const next = lasso.additive ? new Set(prev) : new Set<string>();
+          for (const k of hits) next.add(k);
+          return next;
+        });
+        setSelected(null);
+      }
+      setLasso(null);
+    }
+    pendingBend.current = null;
+    setBendDrag(null);
+    setDragging(null);
+  }, [lasso, lassoHits]);
 
   const deleteSelected = useCallback(() => {
     if (!selected) return;
@@ -1049,15 +1173,49 @@ export function SchematicCanvas({
       });
     } else {
       store.transact('Delete component', (draft) => {
-        delete draft.components[selected.id];
-        for (const [wireId, wire] of Object.entries(draft.wires)) {
-          const touches = (ep: Endpoint) => 'componentId' in ep && ep.componentId === selected.id;
-          if (touches(wire.source) || touches(wire.target)) delete draft.wires[wireId];
-        }
+        deleteComponentInDraft(draft, selected.id);
       });
     }
     setSelected(null);
   }, [selected, store]);
+
+  /**
+   * Delete everything in the multi-selection in ONE transaction, so undo
+   * puts it all back with a single Ctrl-Z rather than making the user press
+   * it once per lassoed item. Order matters: wires first, then groups, then
+   * components — deleting a component also deletes its wires, and doing
+   * components first would leave the wire pass iterating ids that no longer
+   * exist (harmless, but it would also silently skip the group cleanup those
+   * wires needed).
+   */
+  const deleteMultiSelection = useCallback(() => {
+    if (multiSelect.size === 0) return;
+    const wires: string[] = [];
+    const groups: string[] = [];
+    const components: string[] = [];
+    for (const key of multiSelect) {
+      const parsed = parseKey(key);
+      if (!parsed) continue;
+      if (parsed.kind === 'wire') wires.push(parsed.id);
+      else if (parsed.kind === 'group') groups.push(parsed.id);
+      else components.push(parsed.id);
+    }
+    store.transact(`Delete ${multiSelect.size} item${multiSelect.size === 1 ? '' : 's'}`, (draft) => {
+      for (const wireId of wires) deleteWireInDraft(draft, wireId);
+      for (const groupId of groups) {
+        const group = draft.wireGroups[groupId];
+        if (!group) continue;
+        for (const wid of group.memberWireIds) {
+          const w = draft.wires[wid];
+          if (w && w.twistGroupId === groupId) w.twistGroupId = undefined;
+        }
+        delete draft.wireGroups[groupId];
+      }
+      for (const componentId of components) deleteComponentInDraft(draft, componentId);
+    });
+    setMultiSelect(new Set());
+    setSelected(null);
+  }, [multiSelect, store]);
 
   const maxX = Math.max(
     600,
@@ -1085,6 +1243,9 @@ export function SchematicCanvas({
       if (parsed.kind === 'wire') {
         const w = scene.wires.find((sw) => sw.wireId === parsed.id);
         if (w) { sx += w.midpoint.x; sy += w.midpoint.y; n++; }
+      } else if (parsed.kind === 'component') {
+        const nd = scene.nodes.find((sn) => sn.componentId === parsed.id);
+        if (nd) { sx += nd.x + nd.width / 2; sy += nd.y + nd.height / 2; n++; }
       } else {
         const g = store.doc.wireGroups[parsed.id];
         const members = g ? wiresByGroup.get(g.id) : undefined;
@@ -1094,6 +1255,22 @@ export function SchematicCanvas({
     }
     if (n > 0) groupBtnPos = { x: sx / n, y: sy / n - 40 };
   }
+
+  /** How much of the current multi-selection each floating action applies
+   * to. "Groupable" is wires and existing groups only — a connector can't be
+   * a member of a WireGroup, so a lasso that caught both wires and their
+   * connectors must still offer "Group" for the wires rather than going
+   * inert. */
+  const twistStyle = store.doc.settings.twistedPairStyle ?? 'ieee315';
+
+  const selectionCounts = (() => {
+    let groupable = 0;
+    for (const key of multiSelect) {
+      const parsed = parseKey(key);
+      if (parsed && parsed.kind !== 'component') groupable++;
+    }
+    return { groupable, total: multiSelect.size };
+  })();
 
   return (
     <div style={s.root} onClick={() => setContextMenu(null)}>
@@ -1108,10 +1285,15 @@ export function SchematicCanvas({
         {pendingWire && (
           <span style={s.wireHint}>Click a port to finish the wire, or click it again to cancel.</span>
         )}
+        {!pendingWire && multiSelect.size === 0 && (
+          <span style={s.wireHint}>
+            Drag a wire to bend it · alt-click a bend to remove · drag empty space to lasso · alt-drag to pan
+          </span>
+        )}
         {multiSelect.size >= 1 && (
           <span style={s.wireHint}>
-            {multiSelect.size} selected — click "Group" on the canvas
-            {multiSelect.size === 1 ? ' to wrap it (e.g. for a shield)' : ''}, or shift-click to adjust.
+            {multiSelect.size} selected — shift-click to adjust
+            {selectionCounts.groupable >= 1 ? ', or "Group" on the canvas' : ''}.
           </span>
         )}
       </div>
@@ -1122,15 +1304,22 @@ export function SchematicCanvas({
       >
         <div style={{ position: 'relative', width: maxX, height: maxY }}>
           <svg
+            ref={svgRef}
             width={maxX} height={maxY} style={s.canvasSvg}
+            onMouseDown={(e) => { if (e.target === e.currentTarget) onBackgroundDown(e); }}
             onClick={(e) => {
-              // Only deselect on clicks that land on the svg background itself.
-              // Clicking a node fires onMouseDown (which selects) and then a
-              // synthesized click that bubbles up here — stopPropagation() on
-              // the mousedown handler does NOT stop that click, so without
-              // this target check every node click immediately deselects
-              // itself right after selecting.
-              if (e.target === e.currentTarget) {
+              // Only deselect on clicks that land on the svg background
+              // itself. Clicking a node fires onMouseDown (which selects) and
+              // then a synthesized click that bubbles up here —
+              // stopPropagation() on the mousedown handler does NOT stop that
+              // click, so without this target check every node click would
+              // immediately deselect itself right after selecting.
+              //
+              // Background clicks now clear the selection in `onMouseUp`
+              // (the degenerate-marquee case), so this only has to handle
+              // the case where no marquee was started at all — e.g. an
+              // alt-click that went to the pan handler.
+              if (e.target === e.currentTarget && !lasso && e.altKey) {
                 setSelected(null);
                 setMultiSelect(new Set());
               }
@@ -1141,7 +1330,13 @@ export function SchematicCanvas({
                 <circle cx={1} cy={1} r={1} fill={theme.color.gridDot} />
               </pattern>
             </defs>
-            <rect x={0} y={0} width={maxX} height={maxY} fill="url(#dot-grid)" />
+            {/* `pointerEvents: none` matters: this rect covers the whole
+               canvas, so while it accepted pointer events every background
+               click had it as `e.target` and the svg's own
+               `e.target === e.currentTarget` background test could never be
+               true — clicking empty canvas silently failed to deselect, and
+               a marquee started on the grid would never have begun either. */}
+            <rect x={0} y={0} width={maxX} height={maxY} fill="url(#dot-grid)" style={{ pointerEvents: 'none' }} />
 
             {/* Bundle halos — one wide, translucent underlay per WireGroup,
                drawn from its first member's routed path. This is a
@@ -1156,7 +1351,12 @@ export function SchematicCanvas({
               const isSelected = selected?.kind === 'group' && selected.id === groupId;
               const isMulti = multiSelect.has(groupKey(groupId));
               const haloColor = isSelected || isMulti ? theme.color.accent : theme.color.textFaint;
-              const isTwist = group?.kind === 'twist';
+              // Twisted is now its own flag, not an inference from `kind`
+              // (Connor: "decouple the twisted visual from the group's
+              // kind"). The `?? kind === 'twist'` fallback covers a document
+              // loaded by a build without the migration; `migrateLegacyFields`
+              // normally fills this in at load.
+              const isTwist = group?.twisted ?? group?.kind === 'twist';
               const isShielded = !!group?.shield;
               const shieldPart = group?.shield?.partId ? (store.doc.parts[group.shield.partId] as ShieldPart | undefined) : undefined;
               const shieldLabel = shieldPart
@@ -1176,7 +1376,8 @@ export function SchematicCanvas({
                     onContextMenu={(e) => onGroupContextMenu(groupId, e)}
                   >
                     <title>
-                      {group?.kind === 'cable' ? `Cable ${group.refdes ?? ''}` : 'Twisted pair'} ({members.length} wire{members.length === 1 ? '' : 's'})
+                      {group?.kind === 'cable' ? `Cable ${group.refdes ?? ''}` : 'Wire group'} ({members.length} wire{members.length === 1 ? '' : 's'})
+                      {isTwist ? ' — twisted' : ''}
                       {isShielded ? ` — ${shieldLabel}` : ''}
                     </title>
                   </path>
@@ -1184,10 +1385,15 @@ export function SchematicCanvas({
                      twisted wires... crossing over back and forth once
                      right at the connector exit... as short as possible so
                      it fits between the shield and the connector") — a
-                     short "X" crossover glyph at EACH end where the members
-                     leave a connector, not a continuous twist down the
-                     whole run (see twistCrossoverPaths). */}
-                  {isTwist && [...twistCrossoverPaths(members, 'from'), ...twistCrossoverPaths(members, 'to')].map((d, i) => (
+                     short crossover glyph at EACH end where the members
+                     leave a connector, not a continuous twist down the whole
+                     run. Which glyph is drawn now follows the project's
+                     `twistedPairStyle` setting (IEEE 315 vs IEC 60617-3);
+                     see twistCrossoverPaths in @openharness/render. */}
+                  {isTwist && [
+                    ...twistCrossoverPaths(members, 'from', twistStyle),
+                    ...twistCrossoverPaths(members, 'to', twistStyle),
+                  ].map((d, i) => (
                     <path
                       key={i}
                       d={d}
@@ -1210,13 +1416,16 @@ export function SchematicCanvas({
               const isHighlighted = !!highlightedWireIds?.has(w.wireId);
               return (
                 <g key={w.wireId}>
-                  {/* Fat invisible hit-target, easier to click than the thin
-                     trace. Also the source of cross-pane wire hover — see
-                     onHoverWire prop. Wires are always auto-routed in
-                     Schematic now (Connor: "remove routing nodes from
-                     schematic") — no manual-bend drag here. */}
+                  {/* Fat invisible hit-target, easier to grab than the thin
+                     trace. Three jobs: cross-pane wire hover (see the
+                     onHoverWire prop), click-to-select, and — since
+                     drag-to-bend came back — press-and-drag to add a bend.
+                     The click and the drag share this one target and are
+                     told apart by pointer travel, not by a modifier; see
+                     onWireMouseDown. */}
                   <path d={w.path} fill="none" stroke="transparent" strokeWidth={12}
-                    style={{ cursor: 'pointer' }}
+                    style={{ cursor: w.degraded ? 'pointer' : 'grab' }}
+                    onMouseDown={(e) => onWireMouseDown(w.wireId, e)}
                     onClick={(e) => onWireClick(w.wireId, e)} onContextMenu={(e) => onWireContextMenu(w.wireId, e)}
                     onMouseEnter={() => onHoverWire?.(w.wireId)} onMouseLeave={() => onHoverWire?.(null)} />
                   {isHighlighted && (
@@ -1245,6 +1454,25 @@ export function SchematicCanvas({
                   {(isSelected || isMulti) && (
                     <circle cx={w.midpoint.x} cy={w.midpoint.y} r={3.5} fill={theme.color.accent} style={{ pointerEvents: 'none' }} />
                   )}
+                  {/* Manual bend handles. Shown while the wire is selected or
+                     hovered rather than always: a busy schematic where every
+                     bent wire displays permanent handles reads as clutter,
+                     and the handles are only actionable for the wire you're
+                     working on anyway. */}
+                  {(isSelected || isHighlighted || hoveredWireId === w.wireId) && w.manualWaypoints.map((p, i) => (
+                    <circle
+                      key={`bend:${i}`}
+                      cx={p.x} cy={p.y}
+                      r={bendDrag?.wireId === w.wireId && bendDrag.index === i ? 6 : 4.5}
+                      fill={theme.color.canvasBg}
+                      stroke={theme.color.accent}
+                      strokeWidth={1.6}
+                      style={{ cursor: 'move' }}
+                      onMouseDown={(e) => onBendMouseDown(w.wireId, i, e)}
+                    >
+                      <title>Drag to move this bend · alt-click to remove it</title>
+                    </circle>
+                  ))}
                 </g>
               );
             })}
@@ -1272,7 +1500,12 @@ export function SchematicCanvas({
             })}
 
             {scene.nodes.map((node) => {
-              const isSelected = selected?.kind === 'component' && selected.id === node.componentId;
+              // A node reads as selected whether it was clicked directly or
+              // caught by a shift-click/lasso — the two used to be different
+              // states with only the first drawing an outline, so a lassoed
+              // connector gave no feedback that it was about to be deleted.
+              const isSelected = (selected?.kind === 'component' && selected.id === node.componentId)
+                || multiSelect.has(componentKey(node.componentId));
               // Direct hover (this node itself, from any pane) or an
               // indirect one — this connector is an endpoint of a wire
               // highlighted via hoveredWireId/hoveredBundleId (see above).
@@ -1426,7 +1659,12 @@ export function SchematicCanvas({
                   })()}
                   {node.rows.map((row, i) => {
                     const isConnector = node.type === 'connector';
-                    const isEditing = isConnector && editingCavity?.componentId === node.componentId && editingCavity.cavityId === row.rowId;
+                    // The backshell row is a connector row but not a cavity,
+                    // so it has no signal to name — offering "(click to
+                    // name)" there would open an editor that writes to a
+                    // cavity that doesn't exist. See BACKSHELL_CAVITY_ID.
+                    const nameable = isConnector && row.rowId !== BACKSHELL_CAVITY_ID;
+                    const isEditing = nameable && editingCavity?.componentId === node.componentId && editingCavity.cavityId === row.rowId;
                     const labelY = node.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT * 0.68;
                     return (
                       <g key={row.rowId}>
@@ -1452,14 +1690,14 @@ export function SchematicCanvas({
                             x={node.x + 8}
                             y={labelY}
                             fontSize={11} fill={theme.color.textMuted}
-                            style={{ cursor: isConnector ? 'text' : 'default' }}
+                            style={{ cursor: nameable ? 'text' : 'default' }}
                             onClick={(e) => {
-                              if (!isConnector) return;
+                              if (!nameable) return;
                               e.stopPropagation();
                               setEditingCavity({ componentId: node.componentId, cavityId: row.rowId });
                             }}
                           >
-                            {row.label}{row.signal ? `  ·  ${row.signal}` : isConnector ? '  ·  (click to name)' : ''}
+                            {row.label}{row.signal ? `  ·  ${row.signal}` : nameable ? '  ·  (click to name)' : ''}
                           </text>
                         )}
                         <circle
@@ -1557,119 +1795,176 @@ export function SchematicCanvas({
             {/* Shield termination marks (Connor: "shields should appear ...
                at each end" / "should show how shield terminations [are
                done]") — deliberately the LAST thing drawn in the SVG (after
-               every node box), so a mark that ends up geometrically close
-               to a connector — e.g. on a short wire run — is never hidden
-               behind it (the earlier version lived inside the halo pass,
-               which paints BEFORE nodes, so the far-end mark could vanish
-               under the destination connector's box; see file header on
-               `shieldTerminations`). Shows the termination style
-               (pigtail/lug-to-360°/drain wire) as a small glyph plus label,
-               and any free-text note (e.g. "terminates at J1 backshell")
-               underneath — the schematic-visual and text-note forms Connor
-               originally asked for alongside the data model itself. */}
-            {[...wiresByGroup.entries()].map(([groupId, members]) => {
+               every node box), so a mark that ends up geometrically close to
+               a connector — e.g. on a short wire run — is never hidden behind
+               it (an earlier version lived inside the halo pass, which paints
+               BEFORE nodes, so the far-end mark could vanish under the
+               destination connector's box).
+
+               Three things changed here alongside the shield work:
+                 - position along the run is user-controlled (Shield.position,
+                   measured as a fraction of arc length — see
+                   shieldTerminationMarks);
+                 - each end can have its own termination style/note, falling
+                   back to the shared one;
+                 - when the shield has a termination node, each mark carries a
+                   wirable port a drain wire can actually be drawn from. */}
+            {[...deepWiresByGroup.entries()].map(([groupId, members]) => {
               const group = store.doc.wireGroups[groupId];
-              if (!group?.shield) return null;
+              const shield = group?.shield;
+              if (!group || !shield) return null;
               const isSelected = selected?.kind === 'group' && selected.id === groupId;
               const isMulti = multiSelect.has(groupKey(groupId));
               const color = isSelected || isMulti ? theme.color.accent : theme.color.textMuted;
-              const shieldPart = group.shield.partId ? (store.doc.parts[group.shield.partId] as ShieldPart | undefined) : undefined;
+              const shieldPart = shield.partId ? (store.doc.parts[shield.partId] as ShieldPart | undefined) : undefined;
               const shieldLabel = shieldPart
                 ? SHIELD_TYPES.find((t) => t.value === shieldPart.shieldType)?.label ?? 'Shielded'
                 : 'Shielded';
-              const term = group.shield.termination;
-              const termStyleLabel = term?.style ? SHIELD_TERMINATION_STYLES.find((t) => t.value === term.style)?.label : undefined;
-              const marks = shieldTerminations(members);
+              const marks = shieldTerminationMarks(members, shield.position ?? DEFAULT_SHIELD_POSITION);
               return (
                 <g key={`shieldterm:${groupId}`}>
-                  {marks.map((mark, i) => (
-                    <g key={i}>
-                      <ellipse
-                        cx={mark.center.x} cy={mark.center.y} rx={mark.rx} ry={mark.ry}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth={1.4}
-                        strokeDasharray="4 3"
-                        style={{ cursor: 'pointer' }}
-                        onClick={(e) => onGroupHaloClick(groupId, e)}
-                        onContextMenu={(e) => onGroupContextMenu(groupId, e)}
-                      >
-                        <title>
-                          {`${group.refdes ?? 'Shield'} — ${shieldLabel} termination`}
-                          {termStyleLabel ? ` (${termStyleLabel})` : ''}
-                          {term?.note ? `: ${term.note}` : ''}
-                        </title>
-                      </ellipse>
-                      {/* Termination-style glyph, pointing outward (away
-                         from the open wire span, toward the connector this
-                         end terminates at). */}
-                      {term?.style === 'pigtail' && (
-                        <path
-                          d={`M ${mark.center.x + mark.dir * mark.rx} ${mark.center.y} q ${mark.dir * 9} -7 ${mark.dir * 15} 3`}
-                          fill="none" stroke={color} strokeWidth={1.4} strokeLinecap="round"
-                          style={{ pointerEvents: 'none' }}
-                        />
-                      )}
-                      {term?.style === 'lugTo360' && (
-                        <>
+                  {marks.map((mark) => {
+                    // Per-end termination, falling back to the shared one —
+                    // a shield legitimately pigtails at one connector and
+                    // lands on a 360° backshell at the other.
+                    const term = terminationForEnd(shield, mark.end);
+                    const termStyleLabel = term?.style
+                      ? SHIELD_TERMINATION_STYLES.find((t) => t.value === term.style)?.label
+                      : undefined;
+                    return (
+                      <g key={mark.end}>
+                        <ellipse
+                          cx={mark.center.x} cy={mark.center.y} rx={mark.rx} ry={mark.ry}
+                          fill="none"
+                          stroke={color}
+                          strokeWidth={1.4}
+                          strokeDasharray="4 3"
+                          style={{ cursor: 'pointer' }}
+                          onClick={(e) => onGroupHaloClick(groupId, e)}
+                          onContextMenu={(e) => onGroupContextMenu(groupId, e)}
+                        >
+                          <title>
+                            {`${group.refdes ?? 'Shield'} — ${shieldLabel} termination (${mark.end} end)`}
+                            {termStyleLabel ? ` — ${termStyleLabel}` : ''}
+                            {term?.note ? `: ${term.note}` : ''}
+                          </title>
+                        </ellipse>
+                        {/* Termination-style glyph, pointing outward (away
+                           from the open wire span, toward the connector this
+                           end terminates at). */}
+                        {term?.style === 'pigtail' && (
+                          <path
+                            d={`M ${mark.center.x + mark.dir * mark.rx} ${mark.center.y} q ${mark.dir * 9} -7 ${mark.dir * 15} 3`}
+                            fill="none" stroke={color} strokeWidth={1.4} strokeLinecap="round"
+                            style={{ pointerEvents: 'none' }}
+                          />
+                        )}
+                        {term?.style === 'lugTo360' && (
+                          <>
+                            <line
+                              x1={mark.center.x + mark.dir * mark.rx} y1={mark.center.y}
+                              x2={mark.center.x + mark.dir * (mark.rx + 10)} y2={mark.center.y}
+                              stroke={color} strokeWidth={1.4} style={{ pointerEvents: 'none' }}
+                            />
+                            <circle
+                              cx={mark.center.x + mark.dir * (mark.rx + 13)} cy={mark.center.y} r={3}
+                              fill={color} style={{ pointerEvents: 'none' }}
+                            />
+                          </>
+                        )}
+                        {term?.style === 'drainWire' && (
                           <line
                             x1={mark.center.x + mark.dir * mark.rx} y1={mark.center.y}
-                            x2={mark.center.x + mark.dir * (mark.rx + 10)} y2={mark.center.y}
-                            stroke={color} strokeWidth={1.4} style={{ pointerEvents: 'none' }}
+                            x2={mark.center.x + mark.dir * (mark.rx + 16)} y2={mark.center.y}
+                            stroke={color} strokeWidth={1.2} strokeDasharray="1 2" strokeLinecap="round"
+                            style={{ pointerEvents: 'none' }}
                           />
+                        )}
+                        {/* The wirable termination node (Connor: "a
+                           termination connection node on the shield
+                           itself"). Drawn as a port, and clicked like a port
+                           — onShieldNodeClick feeds the same
+                           pending-wire state machine every cavity uses, so a
+                           drain wire is drawn exactly the way any other wire
+                           is. Only the source-end node is wirable: the
+                           endpoint model has one shieldNode per group (a
+                           shield is one conductor), so offering two would
+                           imply two nets where there is one. */}
+                        {shield.terminationNode && (
                           <circle
-                            cx={mark.center.x + mark.dir * (mark.rx + 13)} cy={mark.center.y} r={3}
-                            fill={color} style={{ pointerEvents: 'none' }}
-                          />
-                        </>
-                      )}
-                      {term?.style === 'drainWire' && (
-                        <line
-                          x1={mark.center.x + mark.dir * mark.rx} y1={mark.center.y}
-                          x2={mark.center.x + mark.dir * (mark.rx + 16)} y2={mark.center.y}
-                          stroke={color} strokeWidth={1.2} strokeDasharray="1 2" strokeLinecap="round"
-                          style={{ pointerEvents: 'none' }}
-                        />
-                      )}
-                      <text
-                        x={mark.labelPoint.x} y={mark.labelPoint.y} textAnchor="middle"
-                        fontSize={11} fontWeight={600} fill={color}
-                        style={{ pointerEvents: 'none' }}
-                      >
-                        {group.refdes ?? 'SHIELD'}
-                      </text>
-                      {termStyleLabel && (
+                            cx={mark.nodePoint.x} cy={mark.nodePoint.y} r={5}
+                            fill={pendingWire?.componentId === groupId ? theme.color.accent : theme.color.nodeFill}
+                            stroke={theme.color.accent} strokeWidth={1.5}
+                            style={{ cursor: mark.end === 'source' ? 'crosshair' : 'default' }}
+                            onClick={(e) => { if (mark.end === 'source') onShieldNodeClick(groupId, e); }}
+                          >
+                            <title>
+                              {mark.end === 'source'
+                                ? `${group.refdes ?? 'Shield'} termination node — click to wire a drain`
+                                : `${group.refdes ?? 'Shield'} termination (far end)`}
+                            </title>
+                          </circle>
+                        )}
                         <text
-                          x={mark.labelPoint.x} y={mark.labelPoint.y - 12} textAnchor="middle"
-                          fontSize={9} fill={color}
+                          x={mark.labelPoint.x} y={mark.labelPoint.y} textAnchor="middle"
+                          fontSize={11} fontWeight={600} fill={color}
                           style={{ pointerEvents: 'none' }}
                         >
-                          {termStyleLabel}
+                          {group.refdes ?? 'SHIELD'}
                         </text>
-                      )}
-                    </g>
-                  ))}
-                  {term?.note && marks[0] && (
-                    <text
-                      x={marks[0].labelPoint.x} y={marks[0].center.y + marks[0].ry + 13} textAnchor="middle"
-                      fontSize={9.5} fontStyle="italic" fill={theme.color.textFaint}
-                      style={{ pointerEvents: 'none' }}
-                    >
-                      {term.note}
-                    </text>
-                  )}
+                        {termStyleLabel && (
+                          <text
+                            x={mark.labelPoint.x} y={mark.labelPoint.y - 12} textAnchor="middle"
+                            fontSize={9} fill={color}
+                            style={{ pointerEvents: 'none' }}
+                          >
+                            {termStyleLabel}
+                          </text>
+                        )}
+                        {term?.note && (
+                          <text
+                            x={mark.labelPoint.x} y={mark.center.y + mark.ry + 13} textAnchor="middle"
+                            fontSize={9.5} fontStyle="italic" fill={theme.color.textFaint}
+                            style={{ pointerEvents: 'none' }}
+                          >
+                            {term.note}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
                 </g>
               );
             })}
+
+            {/* Marquee selection rectangle (Connor: "lasso-drag to select
+               multiple wires"). Drawn last so it sits above everything it is
+               selecting, and non-interactive so it can't swallow the
+               mouseup that ends the drag. */}
+            {lasso && (() => {
+              const r = lassoRect(lasso);
+              return (
+                <rect
+                  x={r.x} y={r.y} width={r.width} height={r.height}
+                  fill={theme.color.accent} fillOpacity={0.08}
+                  stroke={theme.color.accent} strokeWidth={1} strokeDasharray="4 3"
+                  style={{ pointerEvents: 'none' }}
+                />
+              );
+            })()}
           </svg>
 
           {groupBtnPos && (
-            <button
-              style={{ ...s.groupActionBtn, left: groupBtnPos.x - 34, top: groupBtnPos.y }}
-              onClick={groupSelection}
-            >
-              Group {multiSelect.size}
-            </button>
+            <div style={{ ...s.selectionActions, left: groupBtnPos.x - 44, top: groupBtnPos.y }}>
+              {selectionCounts.groupable >= 1 && (
+                <button style={s.groupActionBtn} onClick={groupSelection}>
+                  Group {selectionCounts.groupable}
+                </button>
+              )}
+              <button style={s.deleteActionBtn} onClick={deleteMultiSelection}>
+                Delete {selectionCounts.total}
+              </button>
+            </div>
           )}
 
           {selectedComponent && selectedNode && (
@@ -1740,6 +2035,9 @@ export function SchematicCanvas({
                     ? undefined
                     : () => groupSingleWire(selectedWire.wireId)
                 }
+                onAutoRoute={
+                  selectedWire.manualWaypoints.length > 0 ? () => clearBends(selectedWire.wireId) : undefined
+                }
               />
             </div>
           )}
@@ -1774,6 +2072,7 @@ export function SchematicCanvas({
               onDelete={deleteSelected}
               onUngroupWire={removeWireFromGroup}
               onUngroup={ungroupWires}
+              onAutoRoute={clearBends}
             />
           )}
         </div>
@@ -1985,12 +2284,74 @@ function ComponentProperties({ store, component }: { store: HarnessStore; compon
     },
     [store, component.id],
   );
-  return <PartCommonFields part={part} onUpdate={updatePart} />;
+  const updateParasitics = useCallback(
+    (mutate: (p: Parasitics) => void) => {
+      store.transact('Edit parasitics', (draft) => {
+        const c = draft.components[component.id];
+        if (!c) return;
+        if (!c.parasitics) c.parasitics = {};
+        mutate(c.parasitics);
+        // Collapse a fully-blank parasitics object back to undefined so
+        // clearing every field returns the component to exactly the state it
+        // had before anyone opened this section — otherwise the .ohd gains a
+        // permanent empty `"parasitics": {}` that shows up in every diff.
+        const p = c.parasitics;
+        if (p.resistanceOhms === undefined && p.capacitanceFarads === undefined && p.inductanceHenries === undefined) {
+          c.parasitics = undefined;
+        }
+      });
+    },
+    [store, component.id],
+  );
+  const showParasitics = store.doc.settings.showParasitics === true;
+  return (
+    <>
+      <PartCommonFields part={part} onUpdate={updatePart} />
+      {/* Connor: parasitics "should default to zero and be hidden in the
+          properties tab unless a 'show parasitics' checkbox is toggled". The
+          checkbox is project-level (settings.showParasitics), so the choice
+          survives reload and every Properties surface agrees; it's offered
+          right here rather than buried in a settings pane because this is
+          where someone realises they want it. */}
+      <label style={s.checkboxRow}>
+        <input
+          type="checkbox" checked={showParasitics}
+          onChange={(e) => {
+            const v = e.target.checked;
+            store.transact('Toggle show parasitics', (draft) => { draft.settings.showParasitics = v; });
+          }}
+        />
+        Show parasitics
+      </label>
+      {showParasitics && (
+        <>
+          <div style={s.sectionLabel}>Parasitics</div>
+          <ParasiticsFields parasitics={component.parasitics} onUpdate={updateParasitics} />
+        </>
+      )}
+    </>
+  );
 }
 
 function ComponentEditFields({ store, component }: { store: HarnessStore; component: Component }) {
   return (
     <>
+      {component.type === 'connector' && (
+        <label style={s.checkboxRow}>
+          <input
+            type="checkbox" checked={component.backshellTermination === true}
+            onChange={(e) => {
+              const v = e.target.checked;
+              store.transact(v ? 'Add backshell termination' : 'Remove backshell termination', (draft) => {
+                const c = draft.components[component.id];
+                if (c?.type === 'connector') c.backshellTermination = v || undefined;
+              });
+            }}
+          />
+          Backshell termination (BS contact)
+        </label>
+      )}
+
       {component.type === 'connector' && (
         <div style={s.rowList}>
           {component.cavities.map((cavity, i) => (
@@ -2143,13 +2504,16 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
  * swatch pickers over the same auto-assigned palette; part/gauge/refdes are
  * plain fields since there's no standalone parts-library browser yet. */
 function WireInspector({
-  store, wire, onDelete, onUngroupWire, onGroupAlone, onClose,
+  store, wire, onDelete, onUngroupWire, onGroupAlone, onAutoRoute, onClose,
 }: {
   store: HarnessStore;
   wire: SceneWire;
   onDelete: () => void;
   onUngroupWire?: () => void;
   onGroupAlone?: () => void;
+  /** Discards every manual bend and hands the wire back to the auto-router.
+   * Present only when there is something to discard. */
+  onAutoRoute?: () => void;
   onClose: () => void;
 }) {
   const docWire = store.doc.wires[wire.wireId];
@@ -2237,6 +2601,65 @@ function WireInspector({
         />
         <PartCommonFields part={wirePart} onUpdate={updateWirePart} costLabel="Cost (per unit length)" />
 
+        {/* Per-unit-length parasitics on the WIRE PART (Connor: "wire parts
+            gain optional per-unit-length resistance and capacitance
+            fields"). Shown behind the same project-level "show parasitics"
+            switch as component parasitics, and in the document's own length
+            unit — see WirePart.resistancePerLength for why that unit and not
+            per-metre. The derived total underneath is the point of entering
+            them at all: it's the number the user actually wants, and it can
+            only be computed once the wire has a routed length. */}
+        {store.doc.settings.showParasitics && (
+          <>
+            <div style={s.sectionLabel}>Parasitics (per {store.doc.settings.lengthUnit})</div>
+            <label style={s.fieldLabel}>Resistance (Ω/{store.doc.settings.lengthUnit})</label>
+            <input
+              style={s.input} type="number" step="any" placeholder="0"
+              value={wirePart?.resistancePerLength ?? ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                updateWirePart((p) => {
+                  if (p.kind === 'wire') p.resistancePerLength = v === '' ? undefined : Number(v);
+                });
+              }}
+            />
+            <label style={s.fieldLabel}>Capacitance (F/{store.doc.settings.lengthUnit})</label>
+            <input
+              style={s.input} type="number" step="any" placeholder="0"
+              value={wirePart?.capacitancePerLength ?? ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                updateWirePart((p) => {
+                  if (p.kind === 'wire') p.capacitancePerLength = v === '' ? undefined : Number(v);
+                });
+              }}
+            />
+            {(() => {
+              const par = store.derived.wireParasitics.get(wire.wireId);
+              if (!par) return null;
+              return (
+                <div style={s.derivedNote}>
+                  {par.lengthKnown
+                    ? `Total: ${formatSi(par.resistanceOhms, 'Ω')} · ${formatSi(par.capacitanceFarads, 'F')}`
+                    : 'Total unavailable — this wire has no routed length yet.'}
+                </div>
+              );
+            })()}
+          </>
+        )}
+
+        {/* Manual routing (Connor: reimplement drag-to-bend). Drag the trace
+            on the canvas to add a bend; this is the way back. */}
+        <div style={s.sectionLabel}>Routing</div>
+        <div style={s.derivedNote}>
+          {wire.manualWaypoints.length === 0
+            ? 'Auto-routed. Drag the wire on the canvas to bend it.'
+            : `${wire.manualWaypoints.length} manual bend${wire.manualWaypoints.length === 1 ? '' : 's'} — alt-click a handle to remove one.`}
+        </div>
+        {onAutoRoute && (
+          <button style={s.addRowBtn} onClick={onAutoRoute}>Reset to auto-route</button>
+        )}
+
         {onUngroupWire && (
           <button style={s.addRowBtn} onClick={onUngroupWire}>Remove from group</button>
         )}
@@ -2315,6 +2738,21 @@ function GroupInspector({
     });
   };
 
+  /** Per-end termination override. Creates the object on first edit and
+   * clears it back to undefined when the user selects "(same as both ends)",
+   * so an untouched override never appears in the serialised document. */
+  const updateEndTermination = (end: 'source' | 'target', mutate: (t: ShieldTermination) => void) => {
+    store.transact('Edit shield end termination', (draft) => {
+      const g = draft.wireGroups[group.id];
+      if (!g?.shield) return;
+      const key = end === 'source' ? 'sourceTermination' : 'targetTermination';
+      if (!g.shield[key]) g.shield[key] = {};
+      mutate(g.shield[key]!);
+      const t = g.shield[key]!;
+      if (t.style === undefined && t.note === undefined) g.shield[key] = undefined;
+    });
+  };
+
   const setKind = (kind: 'twist' | 'cable') => {
     store.transact('Set group kind', (draft) => {
       const g = draft.wireGroups[group.id];
@@ -2357,10 +2795,30 @@ function GroupInspector({
         <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
       </div>
       <div style={s.cardBody}>
+        {/* `kind` is now purely commercial — does this grouping become a
+            BOM line? — and the twisted checkbox below is the physical fact.
+            They used to be the same control, which meant giving a twisted
+            pair a cable part number silently un-twisted its drawing. */}
         <div style={s.tabRow}>
-          <button style={s.tabBtn(group.kind === 'twist')} onClick={() => setKind('twist')}>Twist</button>
+          <button style={s.tabBtn(group.kind === 'twist')} onClick={() => setKind('twist')}>Bundle</button>
           <button style={s.tabBtn(group.kind === 'cable')} onClick={() => setKind('cable')}>Cable</button>
         </div>
+        <label style={s.checkboxRow}>
+          <input
+            type="checkbox"
+            checked={group.twisted ?? group.kind === 'twist'}
+            disabled={memberWires.length < 2}
+            onChange={(e) => {
+              const v = e.target.checked;
+              store.transact(v ? 'Mark twisted' : 'Clear twisted', (draft) => {
+                const g = draft.wireGroups[group.id];
+                if (g) g.twisted = v;
+              });
+            }}
+          />
+          Twisted
+          {memberWires.length < 2 && <span style={s.hintInline}> (needs 2+ wires)</span>}
+        </label>
 
         {group.kind === 'cable' && (
           <>
@@ -2415,7 +2873,72 @@ function GroupInspector({
               Drain wire
             </label>
 
-            <label style={s.fieldLabel}>Termination</label>
+            {/* How the shield is documented and costed — see ShieldModel.
+                This is the only shield control that changes the BOM. */}
+            <label style={s.fieldLabel}>Model</label>
+            <select
+              style={s.input} value={group.shield.model ?? 'standalonePart'}
+              onChange={(e) => {
+                const v = e.target.value as ShieldModel;
+                store.transact('Set shield model', (draft) => {
+                  const g = draft.wireGroups[group.id];
+                  if (g?.shield) g.shield.model = v;
+                });
+              }}
+            >
+              {SHIELD_MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+            <div style={s.derivedNote}>
+              {(group.shield.model ?? 'standalonePart') === 'standalonePart'
+                ? 'Rolls up as its own BOM line.'
+                : (group.shield.model === 'ipc620WireTermination'
+                  ? 'IPC/WHMA-A-620: documented against the conductor, so no separate BOM line.'
+                  : 'Custom: described by hand, no BOM line generated.')}
+            </div>
+
+            {/* Position along the run (Connor: "user-controlled position
+                along the wire run (wrapping at the connector)"). A fraction
+                of arc length from each end, so 0% sits at the connector face
+                and 50% at mid-span — see shieldTerminationMarks. */}
+            <label style={s.fieldLabel}>
+              Position along run ({Math.round((group.shield.position ?? DEFAULT_SHIELD_POSITION) * 100)}% from each end)
+            </label>
+            <input
+              style={s.input} type="range" min={0} max={49} step={1}
+              value={Math.round((group.shield.position ?? DEFAULT_SHIELD_POSITION) * 100)}
+              onChange={(e) => {
+                const v = Number(e.target.value) / 100;
+                store.transact('Move shield', (draft) => {
+                  const g = draft.wireGroups[group.id];
+                  if (g?.shield) g.shield.position = v;
+                });
+              }}
+            />
+
+            <label style={s.checkboxRow}>
+              <input
+                type="checkbox" checked={!!group.shield.terminationNode}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  store.transact(v ? 'Add shield termination node' : 'Remove shield termination node', (draft) => {
+                    const g = draft.wireGroups[group.id];
+                    if (g?.shield) g.shield.terminationNode = v || undefined;
+                  });
+                }}
+              />
+              Termination node (wirable drain)
+            </label>
+            {group.shield.terminationNode && (
+              <div style={s.derivedNote}>
+                Click the node on the shield mark, then a cavity, to draw the drain wire.
+              </div>
+            )}
+
+            {/* Shared termination, then per-end overrides. The shared one is
+                what most shields need; the overrides exist because a shield
+                genuinely can pigtail at one end and land on a 360° backshell
+                at the other. */}
+            <label style={s.fieldLabel}>Termination (both ends)</label>
             <select
               style={s.input} value={group.shield.termination?.style ?? ''}
               onChange={(e) => {
@@ -2432,6 +2955,23 @@ function GroupInspector({
               placeholder="e.g. terminates at J1 backshell, 360° clamp"
               onChange={(e) => { const v = e.target.value; updateTermination((t) => { t.note = v || undefined; }); }}
             />
+
+            {(['source', 'target'] as const).map((end) => (
+              <div key={end}>
+                <label style={s.fieldLabel}>{end === 'source' ? 'Source end override' : 'Target end override'}</label>
+                <select
+                  style={s.input}
+                  value={(end === 'source' ? group.shield?.sourceTermination : group.shield?.targetTermination)?.style ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value as ShieldTermination['style'];
+                    updateEndTermination(end, (t) => { t.style = v || undefined; });
+                  }}
+                >
+                  <option value="">(same as both ends)</option>
+                  {SHIELD_TERMINATION_STYLES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+            ))}
           </>
         )}
 
@@ -2459,7 +2999,7 @@ function GroupInspector({
  * this menu, and its "Edit" item specifically, is the only way to open the
  * full property card. Item set stays small and real per target kind. */
 function ContextMenu({
-  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup,
+  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup, onAutoRoute,
 }: {
   state: ContextMenuState;
   store: HarnessStore;
@@ -2469,6 +3009,7 @@ function ContextMenu({
   onDelete: () => void;
   onUngroupWire: (groupId: string, wireId: string) => void;
   onUngroup: (groupId: string) => void;
+  onAutoRoute: (wireId: string) => void;
 }) {
   const items: { label: string; onClick: () => void; danger?: boolean }[] = [];
   items.push({ label: 'Edit', onClick: () => { onEdit(); onClose(); } });
@@ -2490,6 +3031,9 @@ function ContextMenu({
     items.push({ label: 'Delete', danger: true, onClick: () => { onDelete(); onClose(); } });
   } else if (state.target.kind === 'wire') {
     const wire = store.doc.wires[state.target.id];
+    if (wire?.schematicWaypoints?.length) {
+      items.push({ label: 'Reset to auto-route', onClick: () => { onAutoRoute(state.target.id); onClose(); } });
+    }
     if (wire?.twistGroupId) {
       items.push({ label: 'Remove from group', onClick: () => { onUngroupWire(wire.twistGroupId!, state.target.id); onClose(); } });
     }
@@ -2697,10 +3241,18 @@ const s = {
   canvasScroll: { flex: 1, overflow: 'auto', cursor: 'grab' },
   canvasSvg: { display: 'block' },
 
+  derivedNote: { fontSize: 11, color: theme.color.textFaint, lineHeight: 1.45 },
+  hintInline: { fontSize: 10.5, color: theme.color.textFaint },
+  selectionActions: { position: 'absolute', zIndex: 4, display: 'flex', gap: 6 },
   groupActionBtn: {
-    position: 'absolute', zIndex: 4, padding: '6px 14px', borderRadius: 999,
+    padding: '6px 14px', borderRadius: 999,
     border: 'none', background: theme.color.accent, color: '#fff', fontSize: 12.5, fontWeight: 600,
     cursor: 'pointer', boxShadow: '0 4px 12px rgba(16,24,40,0.2)',
+  },
+  deleteActionBtn: {
+    padding: '6px 14px', borderRadius: 999,
+    border: `1px solid ${theme.color.border}`, background: theme.color.surface, color: theme.color.danger,
+    fontSize: 12.5, fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 12px rgba(16,24,40,0.14)',
   },
 
   card: {

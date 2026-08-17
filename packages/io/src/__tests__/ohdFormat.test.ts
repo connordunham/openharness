@@ -68,3 +68,34 @@ describe('ohdFormat', () => {
     expect(() => parseDocument(JSON.stringify([1, 2, 3]))).toThrow(/valid \.ohd document/);
   });
 });
+
+describe('parseDocument migrations', () => {
+  it('normalises legacy field shapes at the load boundary', () => {
+    // The load boundary is the ONE place legacy shapes are read, so that
+    // nothing downstream has to know two spellings of the same field —
+    // see migrateLegacyFields.
+    const legacy = {
+      ...createEmptyDocument('Legacy'),
+      wires: {
+        w1: {
+          id: 'w1', refdes: 'W1', color: 'Red', custom: {},
+          source: { kind: 'free', point: { x: 0, y: 0 } },
+          target: { kind: 'free', point: { x: 1, y: 1 } },
+          schematicWaypoint: { x: 5, y: 5 },
+        },
+      },
+      parts: {
+        p1: { id: 'p1', kind: 'generic', custom: {}, maxRating: { value: 30, unit: 'V' } },
+      },
+      wireGroups: {
+        g1: { id: 'g1', kind: 'twist', memberWireIds: ['w1'], memberGroupIds: [], custom: {} },
+      },
+    };
+
+    const loaded = parseDocument(JSON.stringify(legacy));
+
+    expect(loaded.wires['w1']!.schematicWaypoints).toEqual([{ x: 5, y: 5 }]);
+    expect(loaded.parts['p1']!.parameters?.[0]).toMatchObject({ qualifier: 'max', value: 30, unit: 'V' });
+    expect(loaded.wireGroups['g1']!.twisted).toBe(true);
+  });
+});

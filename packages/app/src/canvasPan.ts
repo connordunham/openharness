@@ -55,10 +55,16 @@ export function useCanvasPan(scrollRef: React.RefObject<HTMLDivElement>) {
 
   const onBackgroundMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      // Left button only — middle/right are left free for other tools
-      // (context menus etc.), and we don't want an accidental pan to eat a
-      // right-click.
-      if (e.button !== 0) return;
+      // Left and middle button. Right is left alone so an accidental pan
+      // can't eat a context menu.
+      //
+      // Left-drag reaching this handler at all is now conditional: the
+      // Schematic canvas claims plain left-drag on its background for
+      // marquee selection and calls `stopPropagation`, so what arrives here
+      // from that pane is ALT+left-drag and middle-drag. Layout, which has
+      // no marquee, still gets plain left-drag. This hook doesn't need to
+      // know which pane it's in — it pans whatever reaches it.
+      if (e.button !== 0 && e.button !== 1) return;
       const el = scrollRef.current;
       if (!el) return;
       panState.current = { startX: e.clientX, startY: e.clientY, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop };

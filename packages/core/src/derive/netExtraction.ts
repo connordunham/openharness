@@ -29,6 +29,11 @@ export function endpointKey(endpoint: Endpoint, wireId: WireId, end: 'source' | 
       return `terminalPoint:${endpoint.componentId}`;
     case 'twoTerminalSide':
       return `twoTerminal:${endpoint.componentId}:${endpoint.side}`;
+    case 'shieldNode':
+      // One vertex per shielded group, not per wire — a shield is a single
+      // conductor, so two drain wires landing on the same shield are on the
+      // same net, exactly like two wires landing on the same splice.
+      return `shieldNode:${endpoint.groupId}`;
     case 'free':
       return `free:${wireId}:${end}`;
   }
@@ -58,6 +63,15 @@ export function extractNets(doc: HarnessDocument): NetExtractionResult {
   //    (singleton) net rather than being invisible to the derived model.
   for (const component of Object.values(doc.components)) {
     registerComponentVertices(component, uf, sourceRegistry);
+  }
+
+  // 1b. Shield termination nodes (WireGroup.shield.terminationNode) are
+  //     vertices too, and registered here for the same reason unwired
+  //     cavities are: a shield with a node but no drain wire yet should
+  //     still appear as its own (singleton) net rather than being invisible
+  //     until someone happens to wire it.
+  for (const group of Object.values(doc.wireGroups)) {
+    if (group.shield?.terminationNode) uf.add(`shieldNode:${group.id}`);
   }
 
   // 2. Union across every wire.

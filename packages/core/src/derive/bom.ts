@@ -87,8 +87,19 @@ export function computeBom(doc: HarnessDocument, lengths: Map<WireId, LengthResu
   // Shields (spec follow-up: WireGroup.shield) — one BOM line per shielded
   // group, keyed like everything else by the shield's own PartId so
   // multiple groups sharing the same catalog shield roll up together.
+  //
+  // …except when the shield's `model` says it isn't a purchased line item.
+  // 'ipc620WireTermination' documents the braid as an assembly operation
+  // against the conductor rather than a separate part (IPC/WHMA-A-620), and
+  // 'custom' means the user is describing it by hand and hasn't asked this
+  // tool to assert a rollup either way. Emitting a phantom "(unassigned)"
+  // line for either would be the BOM inventing a purchase order.
   for (const group of Object.values(doc.wireGroups)) {
-    if (group.shield) add(group.shield.partId, group.refdes ?? group.id, 1, 'ea');
+    const shield = group.shield;
+    if (!shield) continue;
+    const model = shield.model ?? 'standalonePart';
+    if (model !== 'standalonePart') continue;
+    add(shield.partId, group.refdes ?? group.id, 1, 'ea');
   }
 
   for (const [wireId, wire] of Object.entries(doc.wires)) {
@@ -133,7 +144,7 @@ function toBomLine(doc: HarnessDocument, entry: Accumulator): BomLine {
     unitPrice,
     extendedPrice: unitPrice !== undefined ? round2(unitPrice * quantity) : undefined,
     url: part?.url,
-    maxRating: part?.maxRating,
+    parameters: part?.parameters,
     refdes: [...entry.refdes].sort(),
     warnings: [...entry.warnings],
   };

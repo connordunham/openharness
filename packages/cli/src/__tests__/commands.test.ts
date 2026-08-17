@@ -88,6 +88,6 @@ describe('runExportCommand', () => {
 
     expect(result.written).toEqual([bomPath]);
     const csv = readFileSync(bomPath, 'utf-8');
-    expect(csv.split('\r\n')[0]).toBe('partNumber,manufacturer,vendorPartNumber,description,quantity,unit,unitPrice,extendedPrice,url,maxRating,refdes,warnings');
+    expect(csv.split('\r\n')[0]).toBe('partNumber,manufacturer,vendorPartNumber,description,quantity,unit,unitPrice,extendedPrice,url,parameters,refdes,warnings');
   });
 });

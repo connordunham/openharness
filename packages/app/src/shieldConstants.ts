@@ -1,4 +1,4 @@
-import type { ShieldTermination, ShieldType } from '@openharness/core';
+import type { ShieldModel, ShieldTermination, ShieldType } from '@openharness/core';
 
 /**
  * Shared shield vocabulary — used by both SchematicCanvas (where a shield is
@@ -21,4 +21,12 @@ export const SHIELD_TERMINATION_STYLES: { value: NonNullable<ShieldTermination['
   { value: 'lugTo360', label: 'Lug to 360° backshell' },
   { value: 'drainWire', label: 'Drain wire' },
   { value: 'none', label: 'None' },
+];
+
+/** How the shield is documented and costed — see ShieldModel in
+ * core/types.ts for what each choice means for the BOM. */
+export const SHIELD_MODELS: { value: ShieldModel; label: string }[] = [
+  { value: 'standalonePart', label: 'Standalone part' },
+  { value: 'ipc620WireTermination', label: 'IPC-620 wire + termination' },
+  { value: 'custom', label: 'Custom' },
 ];

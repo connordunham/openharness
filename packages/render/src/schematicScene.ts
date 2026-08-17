@@ -11,8 +11,10 @@
  * fancier routing is a rendering-quality improvement, not a data-model one.
  */
 
-import type { HarnessDocument, Component, Endpoint, Point, SignalDirection } from '@openharness/core';
-import { computeRoutedPath, pathMidpoint, pointsToPathD, type ExitDir } from './routing.js';
+import type { HarnessDocument, Component, Endpoint, Point, SignalDirection, WireGroup } from '@openharness/core';
+import { BACKSHELL_CAVITY_ID, DEFAULT_SHIELD_POSITION } from '@openharness/core';
+import { computeRoutedPath, computeManualRoutedPath, pathMidpoint, pointsToPathD, type ExitDir } from './routing.js';
+import { shieldTerminationMarks } from './overlays.js';
 
 export const ROW_HEIGHT = 22;
 export const HEADER_HEIGHT = 24;
@@ -58,6 +60,12 @@ export interface SceneWire {
   stripeColor?: string;
   from: Point;
   to: Point;
+  /** Each port's exit direction, carried on the wire so a caller that wants
+   * to re-run the router — the canvas does, to work out where a newly
+   * dragged bend belongs — doesn't have to re-resolve both endpoints
+   * against the row index to recover them. */
+  fromDir: ExitDir;
+  toDir: ExitDir;
   /** True if either endpoint couldn't be resolved to a real point (dangling reference). */
   degraded: boolean;
   /** Route between `from` and `to` with 45°-diagonal lane offsets (routing.ts). */
@@ -66,9 +74,29 @@ export interface SceneWire {
   path: string;
   /** Midpoint along the route — anchors the wire-properties popup on its trace. */
   midpoint: Point;
-  /** Present when the wire has a manual routing override (Wire.schematicWaypoint)
-   * — the app renders a draggable handle here so the bend can be moved. */
-  manualWaypoint?: Point;
+  /** The wire's manual bends, if any (Wire.schematicWaypoints) — the app
+   * renders a draggable handle at each so they can be moved or removed.
+   * Empty means this wire is auto-routed. */
+  manualWaypoints: Point[];
+}
+
+/**
+ * A shield termination node: a wirable port belonging to a WireGroup rather
+ * than to any Component (see Endpoint's `shieldNode` case). Emitted only for
+ * groups that have `shield.terminationNode` set, and only when at least one
+ * member wire could actually be placed — an unplaced group has no run to
+ * hang a node on.
+ */
+export interface SceneShieldNode {
+  groupId: string;
+  refdes: string;
+  /** One per end of the run, in the same order as `shieldTerminationMarks`. */
+  points: Point[];
+  /** Where a drain wire attaches — the node closest to the source end.
+   * A single anchor keeps the endpoint model simple (one `shieldNode`
+   * endpoint per group, matching how net extraction keys it) while both
+   * points are still drawn, so the shield reads as terminated at both ends. */
+  anchor: Point;
 }
 
 export interface SceneNote {
@@ -81,36 +109,51 @@ export interface SchematicScene {
   nodes: SceneNode[];
   wires: SceneWire[];
   notes: SceneNote[];
+  shieldNodes: SceneShieldNode[];
 }
 
 export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
   const nodes: SceneNode[] = [];
+  const stub = doc.settings.schematicExitStub;
+  const routeOpts = stub === undefined ? {} : { stub };
 
   for (const component of Object.values(doc.components)) {
     const node = buildNode(component);
     if (node) nodes.push(node);
   }
 
-  const nodesById = new Map(nodes.map((n) => [n.componentId, n]));
   const rowIndex = buildRowIndex(nodes);
 
-  const wires: SceneWire[] = Object.values(doc.wires).map((wire) => {
-    const from = resolveAnchor(wire.source, rowIndex);
-    const to = resolveAnchor(wire.target, rowIndex);
+  /**
+   * Wires are built in two passes because a shield termination node's
+   * position is derived from the routed paths of the group's *member* wires,
+   * and a drain wire targeting that node is not itself a member. Pass one
+   * routes everything that resolves against component rows alone; the shield
+   * node anchors are then computed from those routes; pass two routes the
+   * drain wires that were waiting on them.
+   *
+   * A drain wire can't itself be a member of the group it terminates (it
+   * connects the shield to something else), so this terminates in exactly
+   * two passes — there is no chain to iterate to a fixed point.
+   */
+  const buildWire = (wire: HarnessDocument['wires'][string], shieldAnchors: Map<string, Anchor>): SceneWire => {
+    const from = resolveAnchor(wire.source, rowIndex, shieldAnchors);
+    const to = resolveAnchor(wire.target, rowIndex, shieldAnchors);
     const degraded = !from || !to;
     const fromPoint = from?.point ?? { x: 0, y: 0 };
     const toPoint = to?.point ?? { x: 0, y: 0 };
+    const manualWaypoints = wire.schematicWaypoints ?? [];
     // A degraded (dangling) wire has nothing sensible to route between —
     // draw it as a straight line so it's still visible as broken, rather
     // than running the elbow router on a meaningless anchor.
     const routed = degraded
-      ? { points: [fromPoint, toPoint], d: `M ${fromPoint.x} ${fromPoint.y} L ${toPoint.x} ${toPoint.y}` }
-      : wire.schematicWaypoint
-        // Manual override (spec follow-up: "drag wires around manually") —
-        // bypass the 45°-diagonal auto-router entirely and draw a straight
-        // two-segment path through the user's dragged bend point.
-        ? { points: [fromPoint, wire.schematicWaypoint, toPoint], d: pointsToPathD([fromPoint, wire.schematicWaypoint, toPoint]) }
-        : computeRoutedPath(fromPoint, from!.dir, toPoint, to!.dir);
+      ? { points: [fromPoint, toPoint], d: pointsToPathD([fromPoint, toPoint]) }
+      : manualWaypoints.length > 0
+        // Manual override (Connor: reimplement drag-to-bend) — the user's
+        // own bends, with the port stubs still enforced at either end. See
+        // computeManualRoutePoints for why the stubs aren't negotiable.
+        ? computeManualRoutedPath(fromPoint, from!.dir, toPoint, to!.dir, manualWaypoints, routeOpts)
+        : computeRoutedPath(fromPoint, from!.dir, toPoint, to!.dir, routeOpts);
     return {
       wireId: wire.id,
       refdes: wire.refdes,
@@ -118,13 +161,35 @@ export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
       stripeColor: wire.stripeColor,
       from: fromPoint,
       to: toPoint,
+      fromDir: from?.dir ?? 'right',
+      toDir: to?.dir ?? 'left',
       degraded,
       routePoints: routed.points,
       path: routed.d,
       midpoint: pathMidpoint(routed.points),
-      manualWaypoint: wire.schematicWaypoint,
+      manualWaypoints,
     };
-  });
+  };
+
+  const allWires = Object.values(doc.wires);
+  const touchesShieldNode = (w: (typeof allWires)[number]) =>
+    w.source.kind === 'shieldNode' || w.target.kind === 'shieldNode';
+
+  const noAnchorsYet = new Map<string, Anchor>();
+  const memberScene = new Map<string, SceneWire>();
+  for (const wire of allWires) {
+    if (touchesShieldNode(wire)) continue;
+    memberScene.set(wire.id, buildWire(wire, noAnchorsYet));
+  }
+
+  const shieldNodes = buildShieldNodes(doc, memberScene);
+  const shieldAnchors = new Map<string, Anchor>(
+    shieldNodes.map((n) => [n.groupId, { point: n.anchor, dir: 'right' as ExitDir }]),
+  );
+
+  const wires: SceneWire[] = allWires.map(
+    (wire) => memberScene.get(wire.id) ?? buildWire(wire, shieldAnchors),
+  );
 
   const notes: SceneNote[] = Object.values(doc.notes).map((note) => ({
     noteId: note.id,
@@ -132,8 +197,42 @@ export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
     text: note.text,
   }));
 
-  void nodesById; // kept for callers that want node lookup alongside the scene
-  return { nodes, wires, notes };
+  return { nodes, wires, notes, shieldNodes };
+}
+
+function buildShieldNodes(doc: HarnessDocument, memberScene: Map<string, SceneWire>): SceneShieldNode[] {
+  const out: SceneShieldNode[] = [];
+  for (const group of Object.values(doc.wireGroups)) {
+    if (!group.shield?.terminationNode) continue;
+    const members = collectGroupMembers(doc, group, new Set())
+      .map((id) => memberScene.get(id))
+      .filter((w): w is SceneWire => !!w && !w.degraded);
+    if (members.length === 0) continue;
+    const marks = shieldTerminationMarks(members, group.shield.position ?? DEFAULT_SHIELD_POSITION);
+    if (marks.length === 0) continue;
+    out.push({
+      groupId: group.id,
+      refdes: group.refdes ?? 'SHIELD',
+      points: marks.map((m) => m.nodePoint),
+      anchor: marks[0]!.nodePoint,
+    });
+  }
+  return out;
+}
+
+/** A group's member wire ids, following `memberGroupIds` so a shield on a
+ * jacketed cable that contains two twisted pairs encircles all four wires,
+ * not just the (zero) wires the outer group lists directly. `seen` guards
+ * against a malformed document with a cyclic group nesting. */
+export function collectGroupMembers(doc: HarnessDocument, group: WireGroup, seen: Set<string>): string[] {
+  if (seen.has(group.id)) return [];
+  seen.add(group.id);
+  const out = [...group.memberWireIds];
+  for (const childId of group.memberGroupIds) {
+    const child = doc.wireGroups[childId];
+    if (child) out.push(...collectGroupMembers(doc, child, seen));
+  }
+  return out;
 }
 
 function buildNode(component: Component): SceneNode | null {
@@ -155,6 +254,21 @@ function buildNode(component: Component): SceneNode | null {
         direction: cavity.direction,
         impedanceMatched: cavity.impedanceMatched,
       }));
+      // Backshell termination (Connor: "an optional connector 'backshell
+      // termination' toggle that adds a BS contact"). Appended as an extra
+      // row below the real cavities — wirable like any other port, but not a
+      // cavity: `signalCapable: false`, so it gets no direction/impedance
+      // controls (a shell ground has no signal direction), and it is never
+      // written back into `component.cavities`. See BACKSHELL_CAVITY_ID.
+      if (component.backshellTermination) {
+        rows.push({
+          rowId: BACKSHELL_CAVITY_ID,
+          label: 'BS',
+          point: { x: exitX, y: pos.y + HEADER_HEIGHT + rows.length * ROW_HEIGHT + ROW_HEIGHT / 2 },
+          dir,
+          signalCapable: false,
+        });
+      }
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width: BOX_WIDTH, height: HEADER_HEIGHT + Math.max(1, rows.length) * ROW_HEIGHT,
@@ -262,8 +376,16 @@ function buildRowIndex(nodes: SceneNode[]): Map<string, Map<string, Anchor>> {
   return index;
 }
 
-function resolveAnchor(endpoint: Endpoint, index: Map<string, Map<string, Anchor>>): Anchor | null {
+function resolveAnchor(
+  endpoint: Endpoint,
+  index: Map<string, Map<string, Anchor>>,
+  shieldAnchors: Map<string, Anchor>,
+): Anchor | null {
   switch (endpoint.kind) {
+    case 'shieldNode':
+      // Null until the shield-node pass has run — that's what makes the
+      // first pass skip drain wires rather than routing them to (0,0).
+      return shieldAnchors.get(endpoint.groupId) ?? null;
     case 'cavity':
       return index.get(endpoint.componentId)?.get(endpoint.cavityId) ?? null;
     case 'cableCore':

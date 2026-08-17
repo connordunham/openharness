@@ -26,7 +26,10 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { createEmptyDocument, computeDerivedModel, type HarnessDocument, type DiagnosticSeverity } from '@openharness/core';
+import {
+  createEmptyDocument, computeDerivedModel, DEFAULT_EXIT_STUB,
+  type HarnessDocument, type DiagnosticSeverity, type TwistedPairStyle,
+} from '@openharness/core';
 import {
   importVendorJson, serializeDocument, parseDocument, bomToCsv,
   interconnectToCsv, interconnectFromCsv, type RawHarnessDocument,
@@ -318,6 +321,72 @@ export function App() {
               )}
             </section>
 
+            {/* Project-level drawing and modelling settings. These live on
+                the document (not in app-local state) because they change what
+                the drawing MEANS to a reader — which twisted-pair standard is
+                being used, how far a wire runs straight out of a connector
+                before the router may bend it — so they have to travel with
+                the file, not with whoever happens to open it. */}
+            <section style={styles.panel}>
+              <h3 style={styles.panelTitle}>Settings</h3>
+              <table style={styles.kvTable}>
+                <tbody>
+                  <tr>
+                    <td style={styles.kvKey}>Twisted-pair symbol</td>
+                    <td style={styles.kvVal}>
+                      <select
+                        style={styles.settingControl}
+                        value={store.doc.settings.twistedPairStyle ?? 'ieee315'}
+                        onChange={(e) => {
+                          const v = e.target.value as TwistedPairStyle;
+                          store.transact('Set twisted-pair style', (draft) => { draft.settings.twistedPairStyle = v; });
+                        }}
+                      >
+                        <option value="ieee315">IEEE Std 315-1975 (single crossover)</option>
+                        <option value="iec60617">IEC 60617-3 (braid)</option>
+                      </select>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={styles.kvKey}>Connector exit stub</td>
+                    <td style={styles.kvVal}>
+                      <input
+                        style={styles.settingControl}
+                        type="number" min={0} max={80} step={1}
+                        value={store.doc.settings.schematicExitStub ?? DEFAULT_EXIT_STUB}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          store.transact('Set exit stub length', (draft) => {
+                            draft.settings.schematicExitStub = Number.isFinite(v) ? Math.max(0, v) : DEFAULT_EXIT_STUB;
+                          });
+                        }}
+                      />
+                      <span style={styles.settingHint}>
+                        px a wire runs straight out of a port before the router may bend it — raise it to leave
+                        room for a shield-wrap symbol at the connector.
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={styles.kvKey}>Parasitics</td>
+                    <td style={styles.kvVal}>
+                      <label style={styles.settingCheckbox}>
+                        <input
+                          type="checkbox"
+                          checked={store.doc.settings.showParasitics === true}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            store.transact('Toggle show parasitics', (draft) => { draft.settings.showParasitics = v; });
+                          }}
+                        />
+                        Show R / C / L fields in Properties
+                      </label>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+
             <section style={styles.panel}>
               <h3 style={styles.panelTitle}>Diagnostics ({derived.diagnostics.length})</h3>
               {derived.diagnostics.length === 0 ? (
@@ -600,6 +669,12 @@ const styles = {
   panelTitle: { margin: '0 0 14px 0', fontSize: 13.5, fontWeight: 600, color: theme.color.textStrong },
   panelSubtitle: { margin: '14px 0 6px 0', fontSize: 12.5, color: theme.color.textMuted, fontWeight: 600 },
   kvTable: { borderCollapse: 'collapse', fontSize: 13, width: '100%' },
+  settingControl: {
+    padding: '4px 8px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control,
+    fontSize: 12.5, background: theme.color.surface, color: theme.color.textStrong, maxWidth: 280,
+  },
+  settingHint: { display: 'block', marginTop: 4, fontSize: 11, color: theme.color.textFaint, lineHeight: 1.4 },
+  settingCheckbox: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: theme.color.textStrong },
   kvKey: { color: theme.color.textFaint, padding: '4px 12px 4px 0', fontWeight: 500 },
   kvVal: { color: theme.color.textStrong, padding: '4px 0', fontWeight: 500 },
   table: { borderCollapse: 'collapse', width: '100%', fontSize: 13 },

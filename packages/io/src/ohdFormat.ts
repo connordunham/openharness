@@ -13,6 +13,7 @@
  */
 
 import type { HarnessDocument } from '@openharness/core';
+import { migrateLegacyFields } from '@openharness/core';
 
 const CURRENT_FORMAT_VERSION = 1;
 
@@ -35,7 +36,11 @@ export function parseDocument(json: string): HarnessDocument {
   // against the type model (that's what `validate` / the DRC rules are
   // for). It only confirms the file is well-formed JSON with the field this
   // whole format is versioned on.
-  return parsed as unknown as HarnessDocument;
+  //
+  // The load boundary is also where legacy field shapes are normalised, so
+  // nothing downstream ever has to know two spellings of the same field —
+  // see migrateLegacyFields for why these don't warrant a formatVersion bump.
+  return migrateLegacyFields(parsed as unknown as HarnessDocument);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

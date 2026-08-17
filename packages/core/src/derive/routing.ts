@@ -30,6 +30,16 @@ export function computeRoutes(doc: HarnessDocument): Map<string, RouteResult> {
   const routes = new Map<string, RouteResult>();
 
   for (const [wireId, wire] of Object.entries(doc.wires)) {
+    // A wire landing on a shield termination node is the shield's drain /
+    // pigtail. It has no independent path through the bundle graph — it runs
+    // alongside the very wires it shields — so it short-circuits exactly like
+    // a cable's own shield core does, and for the same reason: the physical
+    // carrier already accounts for the distance.
+    if (wire.source.kind === 'shieldNode' || wire.target.kind === 'shieldNode') {
+      routes.set(wireId, { status: 'shield', segments: [] });
+      continue;
+    }
+
     const cableStatus = cableCoreStatus(doc, wire.source) ?? cableCoreStatus(doc, wire.target);
     if (cableStatus) {
       routes.set(wireId, { status: cableStatus, segments: [] });
@@ -94,6 +104,13 @@ function resolveEndpointHost(
     case 'terminalPoint':
     case 'twoTerminalSide':
       return resolveComponentHost(doc, endpoint.componentId, visited, excludeWireId);
+    case 'shieldNode':
+      // Unreachable in practice: computeRoutes short-circuits shieldNode
+      // wires to status 'shield' before host resolution is ever attempted.
+      // Present so the switch stays exhaustive under the compiler rather
+      // than relying on a default case that would silently swallow a future
+      // endpoint kind.
+      return undefined;
     case 'free':
       return undefined;
   }

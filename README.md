@@ -19,9 +19,11 @@ Panes that work today:
 
 - **Schematic** — real symbols for every component type (connector housings by
   shape, splice, terminal, branch point, resistor, diode, cable), 45°-diagonal
-  auto-routing, wire groups (twist / cable) with shields and shield-termination
-  glyphs, cross-pane hover highlighting. Wires are always auto-routed; the
-  manual drag-to-bend affordance was deliberately removed.
+  auto-routing with **drag-to-bend** manual override, marquee (lasso) and
+  shift-click multi-select across wires, groups and components, wire groups
+  (twist / cable) with an explicit twisted flag, shields with a user-positioned
+  wrap, per-end terminations and a wirable termination node, optional connector
+  backshell (BS) terminations, and cross-pane hover highlighting.
 - **Layout** — connector/component glyphs with auto-orientation and auto-place,
   flowy bundle routing with per-segment lengths, bundle waypoints, signal-name
   hover tooltips, a closable bundle card, and pass-through resistors/diodes
@@ -31,12 +33,15 @@ Panes that work today:
   (in / out / bidirectional) and an impedance-matched flag with a triangle
   indicator at each pin.
 - **Parts / BOM** — shared part fields across every part kind (manufacturer PN,
-  vendor PN, link, cost, max rating), grouped BOM with populated-cavity contact
-  and seal rollup, CSV export.
+  vendor PN, link, cost) plus a repeatable, user-extensible **parameter list**
+  (`{name, min/max/nom/typ/abs, value, unit}`) replacing the old single
+  max-rating slot; grouped BOM with populated-cavity contact and seal rollup,
+  CSV export.
 - **Diagnostics** — live DRC output from the derive pipeline.
 
-Both canvases pan by click-drag and mouse wheel. Zoom is a known gap and is
-deliberately deferred.
+Layout pans by click-drag; Schematic reserves left-drag on empty canvas for
+the marquee, so it pans with alt-drag or the middle button. Both pan with the
+mouse wheel. Zoom is a known gap and is deliberately deferred.
 
 Verified by actually building and launching the app on Windows and driving it
 with real mouse input — not just typechecked. That process caught a real bug
@@ -72,6 +77,11 @@ model (spec §6):
 - **Interconnect** (`derive/interconnect.ts`) — one row per wire, with each
   endpoint's declared direction folded into a single resolved direction and a
   `conflict` value surfaced rather than guessed.
+- **Parasitics** (`derive/parasitics.ts`) — per-wire R and C from the wire
+  part's per-unit-length figures times the derived length, carrying a
+  `lengthKnown` flag so an unrouted wire reports "unknown" rather than a
+  confident zero. Components carry their own optional R/C/L, hidden behind a
+  project-level "show parasitics" setting.
 - **DRC** (`derive/rules.ts`) — 9 of the 16 built-in rules from spec §6.5 (the
   rest need part-catalogue detail or formboard geometry no fixture exercises
   yet).
@@ -107,8 +117,8 @@ review's evidence discipline (R2: these rules are "plausible engineering
 concerns, not matching the original's actual guardrails" until checked against
 the real app).
 
-**110 tests pass** across `core` (43), `io` (28), `cli` (21), and `render`
-(18). Along the way, fixing a Map-iteration-order false positive in the `.ohd`
+**196 tests pass** across `core` (82), `io` (30), `cli` (21), and `render`
+(63). Along the way, fixing a Map-iteration-order false positive in the `.ohd`
 round-trip test surfaced a real (if minor) issue: BOM/diagnostics/nets output
 order depended on incidental object-insertion order, which would have made
 exported CSVs and golden-file diffs non-reproducible for no functional reason —
@@ -141,7 +151,7 @@ fixtures/       — golden-file test documents (spec §13)
 ```bash
 npm install        # or pnpm install — pnpm-workspace.yaml is included
 npm run typecheck  # tsc -b across the project references
-npm test           # vitest run, 110 tests
+npm test           # vitest run, 196 tests
 npm run lint
 ```
 
@@ -160,28 +170,41 @@ foundation everything else builds on — start there.
 
 ## Roadmap
 
-Next up, in order:
+All six items from the previous roadmap are implemented:
 
-1. **Generic parameter list for parts** — replace the single `maxRating` field
-   with a repeatable list of `{ value, type: min/max/nom/typ, unit }`
-   parameters, user-extensible.
-2. **Parasitics on all components** — optional resistance / capacitance /
-   inductance, defaulting to zero and hidden in Properties behind a "show
-   parasitics" toggle.
-3. **Wire parts** gain optional per-unit-length resistance and capacitance.
-4. **Multi-select** — lasso-drag to select multiple wires; extend shift-click
-   beyond wires/groups to every component type.
-5. **Wire groups** — decouple the twisted visual from the group's `kind` (make
-   it an explicit opt-in checkbox) and add a project-level setting choosing
-   between IEEE Std 315-1975 and IEC 60617-3 twisted-pair symbol styles.
-6. **Shields** — user-controlled position along the wire run, a termination
-   connection node on the shield itself, an optional connector "backshell
-   termination" toggle adding a BS contact, a shield model choice (standalone
-   part / IPC-620 wire+termination / custom), and a configurable straight
-   exit-stub length for wires leaving a connector so there's room to draw the
-   shield-wrap symbol before the auto-router bends them.
+1. ~~Generic parameter list for parts~~ — `PartBase.parameters`, a repeatable
+   `{name, qualifier, value, unit}` list with suggest-don't-constrain unit and
+   name combo boxes. Legacy `maxRating` values migrate on load.
+2. ~~Parasitics on all components~~ — optional R/C/L per component instance,
+   blank (not zero) when uncharacterised, shown only when the project's
+   "show parasitics" setting is on.
+3. ~~Per-unit-length wire R and C~~ — on `WirePart`, in the document's own
+   length unit, with the derived per-wire total shown in the wire inspector.
+4. ~~Multi-select~~ — marquee lasso over wires and components, plus shift-click
+   extended from wires/groups to every component type, with one-transaction
+   delete for the whole selection.
+5. ~~Explicit twisted opt-in~~ — `WireGroup.twisted` decoupled from `kind`,
+   plus a project setting choosing between IEEE Std 315-1975 and IEC 60617-3
+   twisted-pair glyphs.
+6. ~~Shields~~ — user-positioned wrap along the run, per-end termination
+   overrides, a wirable termination node (a real `shieldNode` endpoint, so the
+   drain appears in nets, the interconnect table and the BOM), a connector
+   backshell-termination toggle adding a BS contact, a shield model choice
+   (standalone part / IPC-620 wire+termination / custom) that decides whether
+   the shield gets its own BOM line, and a configurable connector exit-stub
+   length so there is room to draw the wrap before the router bends the wire.
 
-Deferred, not forgotten: **zoom** for the Schematic and Layout canvases.
+Next up:
+
+- **Zoom** for the Schematic and Layout canvases — the one deliberately
+  deferred item. Every pixel-delta drag calculation in both canvases would
+  need to divide by a zoom factor; `clientToCanvas` in SchematicCanvas is
+  already written against `getBoundingClientRect`, so it survives a transform
+  unchanged, but the Layout drag paths are not yet.
+- **Dependency upgrades** — Electron 31, Vite 5 and Vitest 2 all carry open
+  advisories. All are dev/build-time except Electron, which ships.
+- **PDF / XLSX / WireViz export**, the automation host, the MCP server, and
+  the CLI's `run`/`query`/`diff`/`doctor` commands (spec §12).
 
 ## Open decisions
 

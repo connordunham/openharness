@@ -93,7 +93,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
-import { newInstanceId, computeDerivedModel } from '@openharness/core';
+import { newInstanceId, computeDerivedModel, endpointComponentId } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
@@ -149,10 +149,10 @@ function toMm(px: Point): Point {
  * a shield's termination was only editable from the Schematic pane's
  * GroupInspector; now the physical Layout pane surfaces the same field on
  * the connector where the shield actually terminates). A wire "touches" the
- * component if either endpoint resolves to this componentId — covers every
- * Endpoint kind except `free`, which has no componentId at all. */
+ * component if either endpoint resolves to this componentId — see core's
+ * `endpointComponentId` for the kinds that have none. */
 function shieldedGroupsAt(store: HarnessStore, componentId: string): WireGroup[] {
-  const touchesComponent = (ep: Endpoint) => ep.kind !== 'free' && ep.componentId === componentId;
+  const touchesComponent = (ep: Endpoint) => endpointComponentId(ep) === componentId;
   return Object.values(store.doc.wireGroups).filter((g) => {
     if (!g.shield) return false;
     return g.memberWireIds.some((wid) => {
