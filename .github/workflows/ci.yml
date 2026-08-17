@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # CI never launches the app, so skip the ~100 MB Electron binary download.
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc -b --force
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Build renderer
+        working-directory: packages/app
+        run: npx vite build
