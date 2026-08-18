@@ -170,41 +170,44 @@ foundation everything else builds on — start there.
 
 ## Roadmap
 
-All six items from the previous roadmap are implemented:
+Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md) — a gap analysis against
+[docs.the reference tool](the vendor documentation), the reference app this
+project was specced against, captured in full on 17 August 2026.
 
-1. ~~Generic parameter list for parts~~ — `PartBase.parameters`, a repeatable
-   `{name, qualifier, value, unit}` list with suggest-don't-constrain unit and
-   name combo boxes. Legacy `maxRating` values migrate on load.
-2. ~~Parasitics on all components~~ — optional R/C/L per component instance,
-   blank (not zero) when uncharacterised, shown only when the project's
-   "show parasitics" setting is on.
-3. ~~Per-unit-length wire R and C~~ — on `WirePart`, in the document's own
-   length unit, with the derived per-wire total shown in the wire inspector.
-4. ~~Multi-select~~ — marquee lasso over wires and components, plus shift-click
-   extended from wires/groups to every component type, with one-transaction
-   delete for the whole selection.
-5. ~~Explicit twisted opt-in~~ — `WireGroup.twisted` decoupled from `kind`,
-   plus a project setting choosing between IEEE Std 315-1975 and IEC 60617-3
-   twisted-pair glyphs.
-6. ~~Shields~~ — user-positioned wrap along the run, per-end termination
-   overrides, a wirable termination node (a real `shieldNode` endpoint, so the
-   drain appears in nets, the interconnect table and the BOM), a connector
-   backshell-termination toggle adding a BS contact, a shield model choice
-   (standalone part / IPC-620 wire+termination / custom) that decides whether
-   the shield gets its own BOM line, and a configurable connector exit-stub
-   length so there is room to draw the wrap before the router bends the wire.
+Shipped since the last roadmap: a repeatable part parameter list replacing the
+single max-rating slot; parasitics on components and per-unit-length R/C on
+wire parts; marquee and shift-click multi-select; twisted decoupled from group
+kind with an IEEE 315 / IEC 60617-3 setting; and the shield overhaul
+(positioned wrap, per-end terminations, a wirable termination node, backshell
+BS contacts, and a costing model that decides whether the shield gets a BOM
+line). Drag-to-bend manual wire routing came back alongside them.
 
-Next up:
+Next, in order — see `docs/ROADMAP.md` for the reasoning and the full table:
 
-- **Zoom** for the Schematic and Layout canvases — the one deliberately
-  deferred item. Every pixel-delta drag calculation in both canvases would
-  need to divide by a zoom factor; `clientToCanvas` in SchematicCanvas is
-  already written against `getBoundingClientRect`, so it survives a transform
-  unchanged, but the Layout drag paths are not yet.
-- **Dependency upgrades** — Electron 31, Vite 5 and Vitest 2 all carry open
-  advisories. All are dev/build-time except Electron, which ships.
-- **PDF / XLSX / WireViz export**, the automation host, the MCP server, and
-  the CLI's `run`/`query`/`diff`/`doctor` commands (spec §12).
+1. **Drawing correctness** — zoom; mates (connector↔connector and
+   terminal↔cavity, with the cavity-count/gender/size validation that follows);
+   wire-gauge-vs-contact checking with the mm² summation rule; rotate; cavity
+   insert/delete; jumper wires; view toggles.
+2. **Typed part properties** — contact, terminal, splice, diode and resistor
+   fields, kept alongside the open `parameters[]` list rather than replacing
+   it, because validation needs typed fields and datasheets need open ones.
+3. **Bulk editing** — global search, type-to-connect destinations, select-wires-
+   on-net, auto-layout, add-splice-from-selection, inline connectors, groups.
+4. **Output** — PDF with a title block, XLSX wiring table with per-connector
+   pinout sheets, and the reference tool export to match the existing importer.
+5. **Formboard** — 1:1 scale layout, panel grid, bend radii, to-scale
+   snapping, per-panel PDF.
+6. **Local parts library** — a version-controllable catalog with real sync state.
+7. **Automation surface** — the MCP server, the automation host, and the CLI's
+   `run`/`query`/`diff`/`doctor`.
+
+Also outstanding: **dependency upgrades** — Electron 31, Vite 5 and Vitest 2
+all carry open advisories; all are dev/build-time except Electron, which ships.
+
+Deliberately not pursued: teams, seats, billing, cloud sharing and embedding,
+accounts, live multi-user sync, and mobile viewing — all consequences of the
+reference tool being a hosted subscription product. See the roadmap's
+Non-goals section.
 
 ## Open decisions
 
