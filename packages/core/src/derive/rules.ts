@@ -113,7 +113,7 @@ function emptyBundle({ doc, bundleContents }: RuleInputs): Diagnostic[] {
  * real user document — connector "ZWfYpO" has two wires landing on each of
  * its two cavities with no splice between them, which reads as the user
  * using a 2-cavity connector as an in-line jumper/pass-through rather than a
- * true termination. That might be a legitimate the reference tool pattern (some
+ * true termination. That might be a legitimate pattern in the source tool (some
  * real-world builds do land two wires in one crimp) rather than an actual
  * error, and there's no evidence either way — the review document (R2)
  * already flagged that these DRC rules are "plausible engineering concerns,

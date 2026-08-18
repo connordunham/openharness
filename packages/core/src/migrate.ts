@@ -10,7 +10,7 @@
  * is a change that would *lose* or *misread* data, and none of these do.
  *
  * Call this once at the load boundary (`parseDocument`, and the
- * the reference tool importer's output) rather than defensively at every read
+ * vendor-JSON importer's output) rather than defensively at every read
  * site. Reading legacy shapes in the renderer forever is how a codebase ends
  * up with two sources of truth for one field, which is exactly what the
  * orphaned `schematicWaypoint` had already started doing.

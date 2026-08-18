@@ -87,7 +87,7 @@ function printHelp(): void {
       'openharness <command> [options]',
       '',
       'Commands:',
-      '  import <file.json> -o <out.ohd> [--name "..."]   Import a the reference tool export',
+      '  import <file.json> -o <out.ohd> [--name "..."]   Import a vendor JSON export',
       '  validate <file.ohd> [--format json|text] [--fail-on error|warning|info]',
       '  export <file.ohd> --bom <bom.csv>',
       '',

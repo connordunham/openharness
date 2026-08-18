@@ -135,7 +135,7 @@ phase plan.
 ```
 packages/
   core/         @openharness/core        — document model, store, derive pipeline
-  io/           @openharness/io          — the reference tool import, .ohd save/load, BOM + interconnect CSV
+  io/           @openharness/io          — vendor JSON import, .ohd save/load, BOM + interconnect CSV
   cli/          openharness              — import / validate / export --bom
   app/          @openharness/app         — Electron desktop app: Schematic, Layout, Table, Parts, Diagnostics
   render/       @openharness/render      — SVG scene builders shared by the canvases
@@ -170,9 +170,8 @@ foundation everything else builds on — start there.
 
 ## Roadmap
 
-Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md) — a gap analysis against
-[docs.the reference tool](the vendor documentation), the reference app this
-project was specced against, captured in full on 17 August 2026.
+Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md) — a feature gap analysis
+against the commercial tool this project was originally specced against.
 
 Shipped since the last roadmap: a repeatable part parameter list replacing the
 single max-rating slot; parasitics on components and per-unit-length R/C on
@@ -194,7 +193,7 @@ Next, in order — see `docs/ROADMAP.md` for the reasoning and the full table:
 3. **Bulk editing** — global search, type-to-connect destinations, select-wires-
    on-net, auto-layout, add-splice-from-selection, inline connectors, groups.
 4. **Output** — PDF with a title block, XLSX wiring table with per-connector
-   pinout sheets, and the reference tool export to match the existing importer.
+   pinout sheets, and vendor JSON export to match the existing importer.
 5. **Formboard** — 1:1 scale layout, panel grid, bend radii, to-scale
    snapping, per-panel PDF.
 6. **Local parts library** — a version-controllable catalog with real sync state.
@@ -205,8 +204,8 @@ Also outstanding: **dependency upgrades** — Electron 31, Vite 5 and Vitest 2
 all carry open advisories; all are dev/build-time except Electron, which ships.
 
 Deliberately not pursued: teams, seats, billing, cloud sharing and embedding,
-accounts, live multi-user sync, and mobile viewing — all consequences of the
-reference tool being a hosted subscription product. See the roadmap's
+accounts, live multi-user sync, and mobile viewing — all consequences of a
+hosted subscription product, which OpenHarness is not. See the roadmap's
 Non-goals section.
 
 ## Open decisions

@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 /**
  * Two ID spaces, per HARNESS-DESIGNER-SPEC.md §3.3:
  * instance ids are short (nanoid-ish, ~10 chars), part ids are longer (~21 chars)
- * — mirroring what was observed in real the reference tool exports.
+ * — mirroring what was observed in real exports from the reference tool.
  */
 export type ComponentId = string;
 export type WireId = string;

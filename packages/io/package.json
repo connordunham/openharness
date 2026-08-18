@@ -1,7 +1,7 @@
 {
   "name": "@openharness/io",
   "version": "0.0.1",
-  "description": "Load/save, migrations, PDF/XLSX/CSV/WireViz export, the reference tool and KiCad/CSV import (spec §5.1, §11). vendor JSON import: implemented.",
+  "description": "Load/save, migrations, PDF/XLSX/CSV/WireViz export, vendor JSON and KiCad/CSV import (spec §5.1, §11). Vendor wire-format v0.8 JSON import: implemented.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

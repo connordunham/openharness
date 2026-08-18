@@ -38,7 +38,7 @@ Both are fully regenerable from §§1–8 of this file plus the outlines in §§
 
 ## 2. The reference document (hard evidence)
 
-Source: the live document at `a private document URL`, exported via
+Source: the live document at a private document URL, exported via
 **Menu → Export → Harness Data (JSON)**.
 
 **Files:**
@@ -366,13 +366,13 @@ A *configuration* = a named bundle of accessory part refs on a connector part (e
 ## 4. Existing automation surface
 
 Preferences → **AI [BETA]**: *"This is an experimental beta feature. Connect an AI assistant to
-your the reference tool account and it can read and edit your harnesses and parts library for you.
+your vendor account and it can read and edit your harnesses and parts library for you.
 Changes show up in the editor live."*
 
 Presets: **Claude** (Not connected) · **ChatGPT** (Not connected) · **Other**.
 
 **Other** reveals: *"Any MCP-compatible agent can connect with this server URL (sign in with your
-the reference tool account):"* → **`a hosted MCP endpoint`**
+vendor account):"* → **a hosted MCP endpoint**
 
 This is the right shape and validates the plan — but it is hosted, undocumented, has no plugin
 system, no scripting, and no local file. That gap is the entire justification for the project.
@@ -421,7 +421,7 @@ stable. `noPropagate` cavities are excluded as both source and recipient.
 
 ## 6. Deliberate divergences from the reference tool (agreed design)
 
-| the reference tool | OpenHarness | Why |
+| Reference tool | OpenHarness | Why |
 |---|---|---|
 | Per-type top-level arrays | One normalised `components` map + `type` discriminant | Every automation gets shorter |
 | Nested twisted-wire objects | Flat wires + `twistGroupId` | Queryable |

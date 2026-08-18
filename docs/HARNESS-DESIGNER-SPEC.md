@@ -3,7 +3,7 @@
 **A local, automation-first wire harness CAD tool**
 
 Version 0.2 · 2026-08-14 · Author: Claude (for Connor Dunham)
-Reference system studied: the reference tool, two documents:
+Reference system studied: a commercial hosted harness editor, two documents:
 - `ywzg` — a real user document (9 wires, 2 twisted, 3 connectors, 1 splice, 1 resistor)
 - `gpVj` — a synthetic "kitchen sink" document built specifically to exercise entity
   types absent from the first (cable + shield, covering, terminal, note, branch point)
@@ -16,7 +16,7 @@ to be wrong — see §3.3 and the changelog in §16).
 
 ## 0. How this spec was produced
 
-I drove the live the reference tool editor through a browser across two sessions and:
+I drove the live reference editor through a browser across two sessions and:
 
 - walked every menu, submenu, context menu and settings dialog
 - created a connector, selected it, edited it, and deleted it
@@ -43,9 +43,9 @@ The two captured exports are saved next to this spec:
 
 ### 1.1 Why build this locally
 
-the reference tool is good, free, and browser-based, but it is a hosted product. The constraint
+The reference tool is good, free, and browser-based, but it is a hosted product. The constraint
 that matters for this project is that **you cannot put your own code in the loop**. There is
-a beta MCP endpoint (`a hosted MCP endpoint`) but no plugin system, no scripting
+a beta MCP endpoint (a hosted MCP endpoint) but no plugin system, no scripting
 console, no local file format you own, and no way to run a rule on save.
 
 The local version exists so that a harness document is:
@@ -61,7 +61,7 @@ The local version exists so that a harness document is:
 
 | # | Goal |
 |---|---|
-| G1 | Feature parity with the observed the reference tool editor for schematic + layout + wiring table + parts |
+| G1 | Feature parity with the observed reference editor for schematic + layout + wiring table + parts |
 | G2 | A single, documented, versioned JSON document format that round-trips losslessly |
 | G3 | A pure-TypeScript **core** with zero UI dependencies, usable from Node and the browser |
 | G4 | A first-class automation API: transactions, events, derived queries, and a rule engine |
@@ -80,7 +80,7 @@ The local version exists so that a harness document is:
 
 ---
 
-## 2. Observed feature inventory (the reference tool)
+## 2. Observed feature inventory (reference tool)
 
 This is the ground truth the clone is measured against.
 
@@ -359,8 +359,8 @@ default gauge unit `mm²`/AWG) · Sharing · Formboard (1:1 layout) · Delete.
 
 ### 2.9 Automation surface (existing)
 
-Preferences → AI (beta) exposes an **MCP server** at `a hosted MCP endpoint`,
-described as: *"Connect an AI assistant to your the reference tool account and it can read and
+Preferences → AI (beta) exposes an **MCP server** at a hosted MCP endpoint,
+described as: *"Connect an AI assistant to your vendor account and it can read and
 edit your harnesses and parts library for you. Changes show up in the editor live."*
 Presets for Claude and ChatGPT, plus a generic endpoint for any MCP client.
 
@@ -1413,7 +1413,7 @@ show up in the editor live."
 | **BOM CSV** | `partNumber, manufacturer, description, quantity, unit, unitPrice, extendedPrice, refdes, warnings`. |
 | **Document JSON** | The `.ohd` itself. Stable key order, 2-space indent, sorted record keys → clean git diffs. |
 | **WireViz YAML** | See review R22 — small effort, brings an independent fixture corpus and community format alignment. |
-| **vendor JSON** | Optional back-export for interop. Lossy for our extensions; warn on what is dropped. |
+| **Vendor JSON** | Optional back-export for interop. Lossy for our extensions; warn on what is dropped. |
 
 ---
 
@@ -1437,7 +1437,7 @@ show up in the editor live."
 
 ---
 
-## 11. Migration from the reference tool
+## 11. Migration from the vendor format
 
 `openharness import --from vendor-json` performs:
 
@@ -1476,7 +1476,7 @@ in CI, run against both `_reference_harness_export.json` and `_kitchen_sink_expo
 | **7. Polish** | Diagnostics pane, groups, dark/light theming, performance pass against the 500-wire/16ms budget | open-ended |
 
 **Indicative total: ~20–27 weeks to a complete v1, ±50%.** Phase 1 alone, with the CLI, is
-already useful: you can import your existing the reference tool documents and run validation
+already useful: you can import your existing vendor documents and run validation
 and BOM generation on them from a script.
 
 Decide before starting Phase 1: variants in/out (§1.3), directory vs. single-file format
@@ -1537,7 +1537,7 @@ This list shrank from v0.1 but did not close:
 
 ## 15. Summary of deliberate divergences
 
-| the reference tool | OpenHarness | Why |
+| Reference tool | OpenHarness | Why |
 |---|---|---|
 | Per-type top-level arrays | One normalised `components` map with a `type` discriminant | Every automation gets shorter |
 | Nested twisted-wire objects | Flat wires + `twistGroupId` | Queryable |

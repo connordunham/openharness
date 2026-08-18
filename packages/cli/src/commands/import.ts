@@ -12,7 +12,7 @@ export interface ImportCommandResult {
   outputPath: string;
 }
 
-/** `openharness import <file> --from vendor-json -o out.ohd` (spec §8.6). */
+/** `openharness import <file> -o out.ohd` (spec §8.6). */
 export function runImportCommand(opts: ImportCommandOptions): ImportCommandResult {
   const raw: RawHarnessDocument = JSON.parse(readFileSync(opts.inputPath, 'utf-8'));
   const { document, report } = importVendorJson(raw, opts.name ?? opts.inputPath);

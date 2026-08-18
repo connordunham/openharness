@@ -141,10 +141,10 @@ export function App() {
       setBusy(true);
       try {
         const picked = await window.openharness.pickFile({
-          title: kind === 'vendor-json' ? 'Open the reference tool export' : 'Open .ohd document',
+          title: kind === 'vendor-json' ? 'Open vendor harness JSON' : 'Open .ohd document',
           filters:
             kind === 'vendor-json'
-              ? [{ name: 'the reference tool export', extensions: ['json'] }]
+              ? [{ name: 'Vendor harness JSON', extensions: ['json'] }]
               : [{ name: 'OpenHarness document', extensions: ['ohd', 'json'] }],
         });
         if (!picked) return;
@@ -431,7 +431,7 @@ export function App() {
 
         <div style={styles.toolbarGroup}>
           <button style={styles.button} disabled={busy} onClick={newDocument}>New</button>
-          <button style={styles.button} disabled={busy} onClick={() => void load('vendor-json')}>Import the reference tool…</button>
+          <button style={styles.button} disabled={busy} onClick={() => void load('vendor-json')}>Import vendor JSON…</button>
           <button style={styles.button} disabled={busy} onClick={() => void load('ohd')}>Open .ohd…</button>
           <button style={styles.buttonPrimary} disabled={!store} onClick={() => void saveOhd()}>Save as .ohd…</button>
           <button style={styles.button} disabled={!store} onClick={() => void exportBom()}>Export BOM CSV…</button>
@@ -497,12 +497,12 @@ export function App() {
           <div style={styles.emptyMark}>OH</div>
           <h2 style={styles.emptyTitle}>No document open</h2>
           <p style={styles.emptyBody}>
-            Start a new harness, import a the reference tool export, or open a previously-saved .ohd
+            Start a new harness, import a vendor JSON export, or open a previously-saved .ohd
             file to begin.
           </p>
           <div style={styles.emptyActions}>
             <button style={styles.buttonPrimary} onClick={newDocument}>New harness</button>
-            <button style={styles.button} onClick={() => void load('vendor-json')}>Import the reference tool…</button>
+            <button style={styles.button} onClick={() => void load('vendor-json')}>Import vendor JSON…</button>
           </div>
         </div>
       ) : splitLayout === 'single' ? (

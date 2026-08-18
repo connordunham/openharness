@@ -4,7 +4,7 @@
  * refdes, edit a signal, drag a box, delete — goes through
  * `store.transact(...)`, the same call an automation makes (spec §8.3).
  *
- * Editing UX is modeled directly on the reference app (the reference tool),
+ * Editing UX is modeled directly on the reference tool,
  * per Connor's follow-up requests and the confirmed behaviour recorded in
  * HARNESS-DESIGNER-SPEC.md §2.3:
  *   - the component editor is a floating card anchored under the selected

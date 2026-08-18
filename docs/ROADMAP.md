@@ -1,14 +1,14 @@
 # OpenHarness roadmap
 
-Derived from a full capture of [docs.the reference tool](the vendor documentation)
-on **17 August 2026** — every page under Views, Components, Parts, Features,
-Quick Start, Guides, the FAQ, and all 18 release notes from December 2025 to
-August 2026.
+Derived from a full feature survey of the commercial wire-harness tool this
+project was originally specced against (`docs/HARNESS-DESIGNER-SPEC.md` §3
+records that original capture) — every documented view, component, part type,
+feature and release note, reviewed in August 2026.
 
-the reference tool is the reference app this project was specced against
-(`docs/HARNESS-DESIGNER-SPEC.md` §3 records the original capture), so its
-feature set is the most honest available yardstick for "what does a working
-harness tool need". This document turns that yardstick into an ordered plan.
+That tool's feature set is the most honest available yardstick for "what does
+a working harness tool actually need". This document turns the yardstick into
+an ordered plan. It deliberately names no product: the point is the
+capability list, not the competitor.
 
 ## How to read the status column
 
@@ -24,8 +24,8 @@ harness tool need". This document turns that yardstick into an ordered plan.
 
 ## The filter: what not to copy
 
-the reference tool is a hosted, subscription, multi-tenant web app. A large part
-of its surface area exists because of that shape, not because harness
+The surveyed tool is a hosted, subscription, multi-tenant web app. A large
+part of its surface area exists because of that shape, not because harness
 engineering demands it. OpenHarness is local-first and automation-first
 (spec §1), so copying those features wholesale would import someone else's
 business model as though it were a requirement.
@@ -38,7 +38,7 @@ read-only viewing; live multi-user presence and last-write-wins sync.
 Two of these deserve a second look on their own merits, and are listed in the
 phases below in a form that fits a local-first tool:
 
-- **Revisions** — the reference tool's is a server-side snapshot store. For a tool
+- **Revisions** — theirs is a server-side snapshot store. For a tool
   whose file format is already designed for clean git diffs (spec §10), the
   same user need is met by git, and the interesting work is a *diff view*, not
   a snapshot store.
@@ -141,8 +141,8 @@ who isn't the person who drew the harness.
 | **Wiring table XLSX** | Full connection list plus one sheet per connector giving that connector's pinout | **gap** — interconnect CSV exists; the per-connector sheets are the valuable half |
 | **BOM CSV** | Parts view as CSV | **done** |
 | **JSON round-trip** | Save and reload the document locally | **done** — `.ohd`, with sorted keys |
-| **vendor wire-format v0.8 import** | — | **done** — tested against two real captured exports |
-| **vendor wire-format v0.8 *export*** | — | **gap** — the importer already knows the format; the reverse direction makes OpenHarness interoperable rather than a one-way destination |
+| **Vendor v0.8 JSON import** | — | **done** — tested against two real captured exports |
+| **Vendor v0.8 JSON *export*** | — | **gap** — the importer already knows the format; the reverse direction makes OpenHarness interoperable rather than a one-way destination |
 
 ## Phase 5 — Formboard
 
@@ -198,7 +198,7 @@ differentiator actually lies.
 
 | Feature | Reference behaviour | Status |
 |---|---|---|
-| **MCP server** | `a hosted MCP endpoint`, OAuth as the user. Find/open harnesses, explain wiring, add connectors and wires, assign parts, import from a spreadsheet, bulk-load manufacturer catalogs. Shipped July 2026, labelled experimental | **gap** — `packages/mcp` is a stub. A local MCP server needs no auth story at all, which makes this *easier* here than there |
+| **MCP server** | A hosted MCP endpoint, OAuth as the user. Find/open harnesses, explain wiring, add connectors and wires, assign parts, import from a spreadsheet, bulk-load manufacturer catalogs. Shipped July 2026, labelled experimental | **gap** — `packages/mcp` is a stub. A local MCP server needs no auth story at all, which makes this *easier* here than there |
 | **Automation host** | — | **gap** — `packages/automation` is a stub; spec §8.2 |
 | **CLI `run` / `query` / `diff` / `doctor`** | no equivalent | **gap** — spec §8.6. `diff` in particular has no counterpart in a tool without a diffable file format |
 | **Published JSON schema** | Their v0.8 schema is published as markdown explicitly so people can hand it to an LLM | **partial** — OpenHarness's model is documented in `types.ts` doc comments but not published as a standalone reference |
@@ -217,7 +217,8 @@ work goes deeper:
 ## Non-goals
 
 Recorded so they don't get re-proposed. Each is a consequence of
-the reference tool being a hosted subscription product, not of harness engineering.
+the surveyed tool being a hosted subscription product, not of harness
+engineering.
 
 - Teams, seats, per-seat billing, email invitations
 - Cloud sharing links, public harnesses, `<iframe>` embedding, demo mode
@@ -249,13 +250,13 @@ these don't get regressed while chasing parity:
   local backup path.
 - **A CLI and a git-diffable file format.**
 
-## Notes on the source
+## Notes on the survey
 
-- Their FAQ is stale in at least two places: it says search doesn't exist
-  (shipped 2026-05-26) and describes all sharing as owner-only read-only
-  (superseded by Teams, 2026-06-19).
-- Formboard and Teams both launched Enterprise-gated in June 2026 and were
-  opened up on 2026-08-12 when the Enterprise tier was retired.
-- Their own 1.0 notes carry a disclaimer that the tool is "a documentation tool
-  only" and that designs need independent verification before manufacture. The
-  same applies here.
+- The survey is a snapshot. Where the source's own reference pages and its
+  change log disagreed, the change log was taken as current — published
+  reference docs lag shipped behaviour more often than the reverse.
+- Feature gating changed during the period surveyed, so "which plan includes
+  what" was ignored entirely. Only the capability matters here.
+- The surveyed tool ships with a disclaimer that it is a documentation aid and
+  that designs need independent verification before manufacture. The same
+  applies to OpenHarness.

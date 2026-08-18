@@ -1,5 +1,5 @@
 /**
- * Import a the reference tool wire-format (v0.8) export into an OpenHarness
+ * Import a vendor wire-format (v0.8) export into an OpenHarness
  * document (spec §11). Every step below is numbered to match the migration
  * steps listed in HARNESS-DESIGNER-SPEC.md §11.
  */

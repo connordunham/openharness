@@ -4,7 +4,7 @@
  * Transcribed from HARNESS-DESIGNER-SPEC.md §4. This is a normalised model:
  * every component type (connector, splice, terminal, branch point, resistor,
  * diode, cable, generic) lives in one `components` map keyed by id, with a
- * `type` discriminant — a deliberate divergence from the the reference tool wire
+ * `type` discriminant — a deliberate divergence from the vendor wire
  * format, which uses separate top-level arrays per type (spec §3.3, §15).
  *
  * Do not add fields here speculatively. Anything not directly observed in
@@ -421,7 +421,7 @@ export interface Wire {
  * attached, so it rolls up to a real BOM line — this is deliberately how a
  * "cable" comes into being now, instead of placing a `Cable` *component*
  * with pre-declared cores and wiring each one individually. The legacy
- * `Cable` component type (spec §3.3, real the reference tool exports use it)
+ * `Cable` component type (spec §3.3, real vendor exports use it)
  * is kept for import fidelity only — see schematicScene.ts.
  */
 export interface WireGroup {

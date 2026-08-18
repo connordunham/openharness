@@ -1,5 +1,5 @@
 /**
- * Raw the reference tool wire-format (v0.8) types, as directly observed in the
+ * Raw vendor wire-format (v0.8) types, as directly observed in the
  * two captured reference exports (spec §3.1, §3.2):
  *   - a real document (`fixtures/reference-harness.json`): wires, connectors,
  *     twistedWires, bundles, splices, resistors + resistorParts,
