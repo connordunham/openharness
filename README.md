@@ -148,25 +148,81 @@ fixtures/       — golden-file test documents (spec §13)
 
 ## Getting started
 
-```bash
-npm install        # or pnpm install — pnpm-workspace.yaml is included
-npm run typecheck  # tsc -b across the project references
-npm test           # vitest run, 196 tests
-npm run lint
-```
-
-Running the app:
+Requires **Node.js 20.19 or newer** (`node -v` to check). Nothing else — no
+global installs, no Electron download step of your own.
 
 ```bash
-cd packages/app
-npm run build      # vite build (renderer) + tsc (electron main/preload)
-npm run start
+git clone <this repo>
+cd openharness
+npm install     # also compiles the workspace libraries, see below
+npm start       # builds the app and launches it
 ```
 
-Note: launch Electron pointed at `packages/app`, not the repo root.
+That is the whole thing. `npm install` runs `tsc -b` for you through npm's
+`prepare` hook, so the libraries the app imports exist before anything tries
+to import them.
 
-`packages/core/src/store.ts` and `packages/core/src/types.ts` are the
-foundation everything else builds on — start there.
+### Why install compiles things
+
+`@openharness/core`, `io` and `render` are consumed through their built
+output — their `package.json` says `main: ./dist/index.js`. On a fresh clone
+`dist/` does not exist yet, so anything that imports them fails until they
+have been compiled once. That used to bite in two places, both of which are
+now handled automatically:
+
+```
+[commonjs--resolver] Failed to resolve entry for package "@openharness/core".
+The package may have incorrect main/module/exports specified in its package.json.
+```
+
+If you ever see that, the libraries are unbuilt. Run `npm run build` — or
+just `npm install` again — and it goes away. It is not a broken dependency,
+and reinstalling `node_modules` alone will not fix it.
+
+### Everyday commands
+
+Run these from the repo root. Each one builds whatever it needs first.
+
+| Command | What it does |
+|---|---|
+| `npm start` | Build and launch the desktop app |
+| `npm run dev` | Vite dev server + Electron with watch-mode rebuilds |
+| `npm test` | 196 tests (`vitest run`) |
+| `npm run typecheck` | `tsc -b` across the project references |
+| `npm run lint` | ESLint |
+| `npm run build` | Compile every package and bundle the renderer |
+| `npm run clean` | Delete all build output — for when a stale build misleads you |
+
+Working on one package? `npm test -- packages/core` narrows the test run, and
+`npm run build --workspace @openharness/core` builds a single package.
+
+### If something goes wrong
+
+- **`Failed to resolve entry for package "@openharness/…"`** — unbuilt
+  libraries. `npm run build`.
+- **Anything odd after switching branches** — `npm run clean && npm install`.
+  `tsc -b` is incremental and trusts `tsconfig.tsbuildinfo`; a branch switch
+  can leave that stale.
+- **`npm ci` fails** — use `npm install`. `npm ci` demands the lockfile match
+  `package.json` exactly, which it will not while you are adding dependencies.
+- **`electron: not found`** — `node_modules` is incomplete. Delete it and
+  `npm install` again; Electron downloads a ~100 MB binary on first install
+  and a failed download leaves nothing behind to retry from.
+- **Windows: `cannot be loaded because running scripts is disabled`** — that
+  is PowerShell's execution policy blocking `npm.ps1`. Run the command from
+  `cmd.exe`, or use `npm.cmd`, or relax the policy for your user with
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+Use **npm**, not pnpm or yarn. `pnpm-workspace.yaml` is checked in but there
+is no pnpm lockfile, so pnpm would resolve a different dependency tree than
+the one CI builds against.
+
+### Where to start reading
+
+`packages/core/src/types.ts` is the document model and `packages/core/src/store.ts`
+is the transaction/undo layer — everything else builds on those two. The
+derive pipeline in `packages/core/src/derive/` is the next layer up, and
+`packages/app/src/SchematicCanvas.tsx` is the largest UI surface.
 
 ## Roadmap
 

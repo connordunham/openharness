@@ -8,11 +8,16 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "prepare": "tsc -b",
+    "build": "tsc -b && npm run build --workspaces --if-present",
+    "start": "npm start --workspace @openharness/app",
+    "dev": "npm run dev --workspace @openharness/app",
+    "typecheck": "tsc -b",
+    "pretest": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "typecheck": "tsc -b"
+    "clean": "node -e \"const fs=require('fs');for (const p of ['core','io','render','cli','app','automation','mcp']) {fs.rmSync('packages/'+p+'/dist',{recursive:true,force:true});fs.rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true});}fs.rmSync('packages/app/dist-electron',{recursive:true,force:true});\""
   },
   "devDependencies": {
     "typescript": "^5.5.0",
@@ -21,5 +26,8 @@
     "eslint": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }
