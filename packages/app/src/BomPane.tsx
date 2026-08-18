@@ -27,10 +27,10 @@ import { PartParametersEditor } from './partFields.js';
 
 type PartKind = Part['kind'];
 
-const PART_KINDS: PartKind[] = ['connector', 'wire', 'cable', 'shield', 'splice', 'terminal', 'resistor', 'diode', 'covering', 'accessory', 'generic'];
+const PART_KINDS: PartKind[] = ['connector', 'wire', 'cable', 'shield', 'splice', 'terminal', 'contact', 'resistor', 'diode', 'covering', 'accessory', 'generic'];
 
 const PART_KIND_LABEL: Record<PartKind, string> = {
-  connector: 'Connectors', wire: 'Wires', cable: 'Cables', shield: 'Shields', splice: 'Splices', terminal: 'Terminals',
+  connector: 'Connectors', wire: 'Wires', cable: 'Cables', shield: 'Shields', splice: 'Splices', terminal: 'Terminals', contact: 'Contacts',
   resistor: 'Resistors', diode: 'Diodes', covering: 'Coverings', accessory: 'Accessories', generic: 'Generic',
 };
 

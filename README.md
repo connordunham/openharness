@@ -226,8 +226,12 @@ derive pipeline in `packages/core/src/derive/` is the next layer up, and
 
 ## Roadmap
 
-Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md) — a feature gap analysis
-against the commercial tool this project was originally specced against.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the feature gap analysis and phasing.
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — how to work in this repo: the
+  decisions that are already settled, the conventions, and what "done" means.
+- [`docs/tasks/`](docs/tasks/) — the plan broken into self-contained packets,
+  each with its contract, acceptance tests and known traps. Start at
+  [`docs/tasks/README.md`](docs/tasks/README.md) for the order.
 
 Shipped since the last roadmap: a repeatable part parameter list replacing the
 single max-rating slot; parasitics on components and per-unit-length R/C on

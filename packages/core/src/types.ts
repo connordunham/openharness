@@ -15,7 +15,7 @@
  */
 
 import type {
-  ComponentId, WireId, BundleId, GroupId, NoteId, PartId, CavityId, TwistGroupId,
+  ComponentId, WireId, BundleId, GroupId, NoteId, PartId, CavityId, TwistGroupId, MateId,
 } from './ids.js';
 
 /** A WireGroup shares the twist-group id space (spec's `twistedWires[].id`,
@@ -36,6 +36,9 @@ export interface HarnessDocument {
   bundles: Record<BundleId, Bundle>;
   groups: Record<GroupId, Group>;
   notes: Record<NoteId, Note>;
+  /** Connector/terminal mating — see Mate. Optional so documents written
+   * before mates existed still load unchanged; treat absent as empty. */
+  mates?: Record<MateId, Mate>;
   /** Wire groupings authored in this app (spec revision, Connor's wiring-core
    * request): a WireGroup is how a "cable" now comes into being — select two
    * or more wires (or already-grouped wires) and group them, optionally
@@ -58,7 +61,21 @@ export interface DocumentMeta {
 }
 
 export type LengthUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft';
-export type GaugeUnit = 'mm2' | 'awg';
+/**
+ * `cmil`/`kcmil` are circular mils, standard in North American power and
+ * aerospace harnesses above roughly 4/0 AWG where AWG stops being expressive.
+ * They are definitional rather than tabulated: 1 cmil is the area of a circle
+ * one mil (0.001 in) in diameter. See `gauge.ts` for the conversions and for
+ * why mm² is the canonical internal unit.
+ */
+export type GaugeUnit = 'mm2' | 'awg' | 'cmil' | 'kcmil';
+
+/** A gauge with its unit. Always convert through `gauge.ts` rather than
+ * comparing `.value` across two different units. */
+export interface Gauge {
+  value: number;
+  unit: GaugeUnit;
+}
 export type Currency = 'USD' | 'EUR' | 'GBP' | 'JPY' | 'INR';
 
 export interface SheetSize {
@@ -549,6 +566,49 @@ export interface ShieldTermination {
 }
 
 // ---------------------------------------------------------------------------
+// Mates
+// ---------------------------------------------------------------------------
+
+/**
+ * Two connectors plugged into each other, or terminals joined to each other
+ * or into a connector cavity. Bulkhead and pass-through connectors are the
+ * everyday case.
+ *
+ * WHY THIS IS ITS OWN ENTITY, not a wire and not a part reference:
+ *
+ * A mate is not a conductor — it carries no length, no gauge and no BOM line,
+ * so modelling it as a Wire would corrupt every length and BOM rollup that
+ * walks `doc.wires`. It is also not a property of a Part: the same connector
+ * part can be mated to different things in different places in one harness,
+ * and `ConnectorPart.matingPartId` only records what a part is *compatible*
+ * with, never what a given instance is actually plugged into.
+ *
+ * What it DOES do is join nets. Mating C1 to C2 puts C1 cavity 1 and C2
+ * cavity 1 on the same net with no wire drawn between them, which is why net
+ * extraction has to know about mates (see derive/mates.ts). Until this
+ * existed a bulkhead's two halves were unavoidably separate nets, which is
+ * wrong in a way no amount of UI could paper over.
+ *
+ * Cavity correspondence is POSITIONAL, not by designation: mated connectors
+ * pair their nth cavities. Designations are labels, and two mating housings
+ * routinely label the same physical position differently (1..8 against A..H),
+ * so pairing by label would mis-wire exactly the connectors most likely to be
+ * bulkheads. The cavity-count validation exists to make positional pairing
+ * safe.
+ */
+export interface Mate {
+  id: MateId;
+  sourceId: ComponentId;
+  targetId: ComponentId;
+  /** Required only when mating a terminal INTO a connector cavity: a terminal
+   * has one port, so the connector end needs to say which cavity receives it.
+   * Meaningless (and ignored) for connector-to-connector mates, where every
+   * cavity pairs positionally. */
+  targetCavityId?: CavityId;
+  custom: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
 // Bundles (spec §4.4)
 // ---------------------------------------------------------------------------
 
@@ -742,12 +802,96 @@ export interface CoveringPart extends PartBase {
   pricePerMeter?: number;
 }
 
-// Not yet observed directly (spec §14) — pattern-matched shapes, kept deliberately minimal.
-export interface SplicePart extends PartBase { kind: 'splice'; spliceKind?: SpliceKind }
-export interface TerminalPart extends PartBase { kind: 'terminal'; terminalKind?: TerminalKind }
-export interface ResistorPart extends PartBase { kind: 'resistor'; resistanceOhms?: number }
-export interface DiodePart extends PartBase { kind: 'diode' }
-export interface CablePart extends PartBase { kind: 'cable'; coreCount?: number; shielded?: boolean }
+/**
+ * TYPED FIELDS vs THE OPEN `parameters[]` LIST — read this before adding either.
+ *
+ * `PartBase.parameters` exists to record whatever a datasheet says, in the
+ * user's own words and units. It is deliberately unconstrained, and that is
+ * exactly why nothing can validate against it: a rule cannot key off a field
+ * whose name the user invented.
+ *
+ * So the two coexist, and the dividing line is a rule, not a preference:
+ *
+ *   A field is TYPED if and only if a derive stage or a DRC rule reads it.
+ *
+ * Everything below is typed because something checks it. A voltage rating
+ * nobody checks belongs in `parameters`, not here. Adding a typed field
+ * without a corresponding consumer is how a data model rots into a form.
+ */
+
+/** Gauge-constrained parts share this shape. The pair is a closed range and
+ * both ends are optional: a part that only publishes one end is common, and
+ * an absent bound means "unconstrained in that direction", never zero. */
+export interface GaugeRange {
+  minGauge?: Gauge;
+  maxGauge?: Gauge;
+}
+
+export interface SplicePart extends PartBase, GaugeRange {
+  kind: 'splice';
+  spliceKind?: SpliceKind;
+}
+
+export interface TerminalPart extends PartBase, GaugeRange {
+  kind: 'terminal';
+  terminalKind?: TerminalKind;
+  /** Stud/screw size. A union because the real world is both: a ring terminal
+   * is `{ value: 6, unit: 'mm' }` in one catalog and the string `#8` in
+   * another (US screw gauge), and coercing `#8` into a number would silently
+   * invent a dimension. Mate size-compatibility compares numerics
+   * numerically and strings by exact match — see derive/mates.ts. */
+  size?: Gauge | { value: number; unit: LengthUnit } | string;
+  /** Quick-connect tabs are the one terminal family with a gender. */
+  gender?: 'male' | 'female';
+}
+
+export interface ContactPart extends PartBase, GaugeRange {
+  kind: 'contact';
+  /** How the conductor is attached. Drives which assembly rules apply. */
+  terminationType?: 'crimp' | 'solder' | 'other';
+  gender?: 'pin' | 'socket';
+  /** The seal fitted around this contact where its wire enters the cavity.
+   * Referenced from the contact rather than the cavity because the seal is
+   * chosen to fit the CONTACT, and the BOM quantity follows contact usage. */
+  cavitySealPartId?: PartId;
+}
+
+export interface ResistorPart extends PartBase {
+  kind: 'resistor';
+  /** Stored in base SI (Ω, W) for the same reason `Parasitics` is: there is
+   * one physical quantity per field, so a unit selector would only be
+   * choosing a display prefix. Format with `formatSi`. */
+  resistanceOhms?: number;
+  powerWatts?: number;
+}
+
+export interface DiodePart extends PartBase {
+  kind: 'diode';
+  /** Reverse breakdown voltage, V. */
+  breakdownVoltage?: number;
+  /** Forward current rating, A. */
+  forwardCurrent?: number;
+}
+
+/** One conductor inside a cable part. Cores carry no `partId` of their own —
+ * they are described by the cable they belong to, and giving them one would
+ * let a core disagree with its own cable about what it is. */
+export interface CableCorePart {
+  id: string;
+  color: WireColor;
+  stripeColor?: WireColor;
+  gauge?: Gauge;
+}
+
+export interface CablePart extends PartBase {
+  kind: 'cable';
+  shielded?: boolean;
+  /** Per-core detail. `coreCount` is retained only for documents written
+   * before this existed; when `cores` is present it is authoritative and the
+   * count is `cores.length`. */
+  cores?: CableCorePart[];
+  coreCount?: number;
+}
 /** [inferred] — backs `WireGroup.shield.partId` (spec follow-up: shield
  * data model). `coverage` is braid-only (percent, 0-100); `foil`/`served`
  * shields don't have a meaningful coverage figure so it's left blank for
@@ -768,7 +912,7 @@ export interface AccessoryPart extends PartBase {
 export interface GenericPart extends PartBase { kind: 'generic' }
 
 export type Part =
-  | ConnectorPart | WirePart | CablePart | SplicePart | TerminalPart
+  | ConnectorPart | WirePart | CablePart | SplicePart | TerminalPart | ContactPart
   | ResistorPart | DiodePart | CoveringPart | AccessoryPart | ShieldPart | GenericPart;
 
 // ---------------------------------------------------------------------------

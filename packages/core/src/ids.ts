@@ -13,6 +13,7 @@ export type NoteId = string;
 export type PartId = string;
 export type CavityId = string;
 export type TwistGroupId = string;
+export type MateId = string;
 
 export function newInstanceId(): ComponentId {
   return nanoid(10);
