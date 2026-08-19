@@ -10,6 +10,10 @@
   "scripts": {
     "prepare": "tsc -b",
     "build": "tsc -b && npm run build --workspaces --if-present",
+    "package": "npm run build && npm run package --workspace @openharness/app",
+    "package:win": "npm run build && npm run package:win --workspace @openharness/app",
+    "package:linux": "npm run build && npm run package:linux --workspace @openharness/app",
+    "package:mac": "npm run build && npm run package:mac --workspace @openharness/app",
     "start": "npm start --workspace @openharness/app",
     "dev": "npm run dev --workspace @openharness/app",
     "typecheck": "tsc -b",
@@ -17,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "clean": "node -e \"const fs=require('fs');for (const p of ['core','io','render','cli','app','automation','mcp']) {fs.rmSync('packages/'+p+'/dist',{recursive:true,force:true});fs.rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true});}fs.rmSync('packages/app/dist-electron',{recursive:true,force:true});\""
+    "clean": "node -e \"const fs=require('fs');for (const p of ['core','io','render','cli','app','automation','mcp']) {fs.rmSync('packages/'+p+'/dist',{recursive:true,force:true});fs.rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true});}fs.rmSync('packages/app/dist-electron',{recursive:true,force:true});\"",
+    "doctor": "node scripts/doctor.mjs"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

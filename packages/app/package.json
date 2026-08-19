@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "description": "The Electron desktop app: multi-pane workspace over Schematic / Layout / Parts / Connections / Diagnostics views (spec \u00a77). GUI is mandatory per the reference app.",
+  "author": "OpenHarness contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/connordunham/openharness",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -13,7 +16,11 @@
     "build": "npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
     "dev": "concurrently -k -n renderer,electron -c blue,green \"npm run dev:renderer\" \"npm run build:electron -- --watch --preserveWatchOutput\" ",
-    "electron:dev": "cross-env OPENHARNESS_DEV=1 electron dist-electron/main.js"
+    "electron:dev": "cross-env OPENHARNESS_DEV=1 electron dist-electron/main.js",
+    "package": "electron-builder",
+    "package:win": "electron-builder --win",
+    "package:linux": "electron-builder --linux",
+    "package:mac": "electron-builder --mac"
   },
   "dependencies": {
     "@openharness/core": "*",
@@ -28,10 +35,11 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
-    "typescript": "^5.5.0",
-    "vite": "^5.4.0",
-    "electron": "^31.3.0",
     "concurrently": "^8.2.2",
-    "cross-env": "^7.0.3"
+    "cross-env": "^7.0.3",
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
   }
 }

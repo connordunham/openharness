@@ -6,4 +6,5 @@ dist-electron/
 *.ohd.ui.json
 /fixtures/**/*.actual.json
 .openharness/
+release/
 review/

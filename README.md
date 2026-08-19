@@ -147,38 +147,102 @@ docs/           — design spec, review notes, session context
 fixtures/       — golden-file test documents (spec §13)
 ```
 
-## Getting started
+## Install it
 
-Requires **Node.js 20.19 or newer** (`node -v` to check). Nothing else — no
-global installs, no Electron download step of your own.
+**You do not need Node.js, npm, or a build toolchain to use OpenHarness.**
+Download one file from the [Releases
+page](https://github.com/connordunham/openharness/releases) and run it.
+
+| If you are on | Take |
+|---|---|
+| Windows | `OpenHarness-Setup-*.exe` — the normal installer |
+| Windows, without admin rights | `OpenHarness-*-portable-*.exe` — one file, installs nothing, writes no registry keys |
+| Linux | `OpenHarness-*.AppImage` (`chmod +x` it, then run it) or the `.deb` |
+| macOS, Apple silicon | `OpenHarness-*-arm64.dmg` |
+| macOS, Intel | `OpenHarness-*-x64.dmg` |
+
+These builds are **not code-signed**, because signing certificates cost money
+this project does not have. The consequence is a scary-looking warning on
+first launch, and nothing else:
+
+- **Windows** — SmartScreen says "Windows protected your PC". Click *More
+  info*, then *Run anyway*.
+- **macOS** — Gatekeeper refuses to open it. Right-click the app and choose
+  *Open*, then *Open* again in the dialog. You only do this once.
+- **Linux** — no warning, but AppImages need the executable bit:
+  `chmod +x OpenHarness-*.AppImage`.
+
+That is the whole installation. Everything below this point is for people who
+want to **change** the code.
+
+---
+
+## Build from source
+
+Only necessary if you intend to modify OpenHarness. If you just want to run
+it, use an installer above — building from source is strictly more work and
+gets you the same application.
+
+### 1. Node.js
+
+Install **Node.js 22 LTS** from [nodejs.org](https://nodejs.org). Take the
+LTS installer and accept every default. That is genuinely all the
+configuration there is — if you find yourself editing PATH by hand, something
+has gone wrong and the doctor below will say what.
+
+Node 20.19 or newer will work; 22 is what CI uses and what `.nvmrc` pins. If
+you already run [nvm](https://github.com/nvm-sh/nvm) or
+[nvm-windows](https://github.com/coreybutler/nvm-windows), `nvm use` picks up
+`.nvmrc` on its own.
+
+### 2. Clone and build
 
 ```bash
-git clone <this repo>
+git clone https://github.com/connordunham/openharness.git
 cd openharness
-npm install     # also compiles the workspace libraries, see below
+npm install     # also compiles the workspace libraries — see below
 npm start       # builds the app and launches it
 ```
 
-That is the whole thing. `npm install` runs `tsc -b` for you through npm's
-`prepare` hook, so the libraries the app imports exist before anything tries
-to import them.
+Use **npm**, not pnpm or yarn. `pnpm-workspace.yaml` is checked in but there
+is no pnpm lockfile, so pnpm resolves a different dependency tree than the one
+CI builds against.
 
-### Why install compiles things
+On Windows, clone somewhere **outside OneDrive**. OneDrive replaces unsynced
+files with reparse points, which breaks builds in ways that look like random
+file-not-found errors.
 
-`@openharness/core`, `io` and `render` are consumed through their built
-output — their `package.json` says `main: ./dist/index.js`. On a fresh clone
-`dist/` does not exist yet, so anything that imports them fails until they
-have been compiled once. That used to bite in two places, both of which are
-now handled automatically:
+### 3. When it goes wrong, ask the repo
+
+```bash
+npm run doctor
+```
+
+This checks the things that have actually broken on real machines — Node
+version, a half-downloaded Electron binary, unbuilt workspace libraries, a
+stray pnpm lockfile, PowerShell's execution policy, OneDrive — and prints the
+exact command that fixes each one. Run it before reading any stack trace.
+
+### Why `npm install` compiles things
+
+`@openharness/core`, `io` and `render` are consumed through their **built
+output** — their `package.json` says `main: ./dist/index.js`. On a fresh clone
+`dist/` does not exist, so anything that imports them fails until they have
+been compiled once:
 
 ```
 [commonjs--resolver] Failed to resolve entry for package "@openharness/core".
 The package may have incorrect main/module/exports specified in its package.json.
 ```
 
-If you ever see that, the libraries are unbuilt. Run `npm run build` — or
-just `npm install` again — and it goes away. It is not a broken dependency,
-and reinstalling `node_modules` alone will not fix it.
+That error means unbuilt libraries, not a broken dependency, and reinstalling
+`node_modules` alone will not fix it. `npm install` runs `tsc -b` through
+npm's `prepare` hook, and `npm test` / `npm run build` / `npm start` each build
+what they need first, so you should never see it. If you do, `npm run build`.
+
+If you change the build graph, verify with an actual fresh `git clone` into a
+new directory rather than a clean build in your existing one. This has broken
+clone-and-run twice.
 
 ### Everyday commands
 
@@ -192,12 +256,43 @@ Run these from the repo root. Each one builds whatever it needs first.
 | `npm run typecheck` | `tsc -b` across the project references |
 | `npm run lint` | ESLint |
 | `npm run build` | Compile every package and bundle the renderer |
+| `npm run doctor` | Diagnose a broken environment |
 | `npm run clean` | Delete all build output — for when a stale build misleads you |
+| `npm run package` | Build installers for your current OS into `release/` |
 
 Working on one package? `npm test -- packages/core` narrows the test run, and
 `npm run build --workspace @openharness/core` builds a single package.
 
-### If something goes wrong
+### Building installers yourself
+
+```bash
+npm run package          # your current platform
+npm run package:win      # or :linux, or :mac
+```
+
+Output lands in `release/` — an NSIS installer and a portable `.exe` on
+Windows, an AppImage and `.deb` on Linux, `.dmg` and `.zip` on macOS. You can
+only build macOS installers on macOS; the Windows and Linux targets cross-build
+from anywhere.
+
+**On Windows, packaging needs Developer Mode enabled** (Settings → System → For
+developers). electron-builder unpacks a signing toolchain containing symlinks,
+and Windows refuses to create those without Developer Mode or admin rights.
+The failure reads `Cannot create symbolic link: A required privilege is not
+held by the client`, which does not sound like what it is. `npm run doctor`
+checks for this.
+
+In practice you should not need to package anything locally — tagging a
+release builds all three platforms in CI (`.github/workflows/release.yml`) and
+attaches the files to a GitHub Release:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+### If something still goes wrong
+
+`npm run doctor` covers most of it. The rest:
 
 - **`Failed to resolve entry for package "@openharness/…"`** — unbuilt
   libraries. `npm run build`.
@@ -206,17 +301,18 @@ Working on one package? `npm test -- packages/core` narrows the test run, and
   can leave that stale.
 - **`npm ci` fails** — use `npm install`. `npm ci` demands the lockfile match
   `package.json` exactly, which it will not while you are adding dependencies.
-- **`electron: not found`** — `node_modules` is incomplete. Delete it and
-  `npm install` again; Electron downloads a ~100 MB binary on first install
-  and a failed download leaves nothing behind to retry from.
+- **`electron: not found`, or the app never opens a window** — the ~100 MB
+  Electron binary download failed and left nothing behind to retry from. Run
+  `node node_modules/electron/install.js`, or delete `node_modules` and
+  `npm install` again. Behind a corporate proxy or firewall, set
+  `ELECTRON_MIRROR` to an internal mirror — or stop fighting it and use the
+  prebuilt installer.
 - **Windows: `cannot be loaded because running scripts is disabled`** — that
   is PowerShell's execution policy blocking `npm.ps1`. Run the command from
-  `cmd.exe`, or use `npm.cmd`, or relax the policy for your user with
-  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
-
-Use **npm**, not pnpm or yarn. `pnpm-workspace.yaml` is checked in but there
-is no pnpm lockfile, so pnpm would resolve a different dependency tree than
-the one CI builds against.
+  `cmd.exe`, or use `npm.cmd`, or fix it once with
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. Worth doing: this
+  failure mode can make a build that did nothing look like a build that
+  passed.
 
 ### Where to start reading
 
@@ -224,6 +320,9 @@ the one CI builds against.
 is the transaction/undo layer — everything else builds on those two. The
 derive pipeline in `packages/core/src/derive/` is the next layer up, and
 `packages/app/src/SchematicCanvas.tsx` is the largest UI surface.
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the conventions that matter and how
+to send a patch.
 
 ## Roadmap
 

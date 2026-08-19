@@ -13,7 +13,15 @@ criteria. If you want something to do, start at
 
 ## Getting it running
 
-Requires **Node.js 20.19 or newer**. Nothing else.
+You only need a toolchain if you are changing the code. If you just want to
+*run* OpenHarness, take an installer from the [Releases
+page](https://github.com/connordunham/openharness/releases) — no Node, no
+build.
+
+To build from source you need **Node.js 22 LTS** from
+[nodejs.org](https://nodejs.org) — take the LTS installer and accept the
+defaults. Node 20.19+ works; 22 is what CI uses and what `.nvmrc` pins.
+Nothing else.
 
 ```bash
 git clone https://github.com/connordunham/openharness.git
@@ -38,8 +46,14 @@ compiled once:
 [commonjs--resolver] Failed to resolve entry for package "@openharness/core".
 ```
 
-That error means unbuilt libraries, not a broken dependency, and reinstalling
-`node_modules` alone will not fix it. `npm install` runs `tsc -b` for you via
+**When anything at all goes wrong, run `npm run doctor` first.** It checks the
+failures that have actually happened on real machines — wrong Node version, a
+half-downloaded Electron binary, unbuilt libraries, a stray pnpm lockfile,
+PowerShell's execution policy, a clone inside OneDrive — and prints the exact
+fix for each. It is faster than reading the stack trace.
+
+That error above means unbuilt libraries, not a broken dependency, and
+reinstalling `node_modules` alone will not fix it. `npm install` runs `tsc -b` for you via
 npm's `prepare` hook, and `npm test` / `npm run build` / `npm start` each build
 what they need first. If you ever hit it anyway, `npm run build`.
 
@@ -56,7 +70,9 @@ build in your existing one.
 | `npm test` | Full test run (`vitest run`) |
 | `npm run typecheck` | `tsc -b` across the project references |
 | `npm run lint` | ESLint |
+| `npm run doctor` | Diagnose a broken environment |
 | `npm run clean` | Delete all build output, for when a stale build misleads you |
+| `npm run package` | Build installers for your current OS into `release/` |
 
 Odd behaviour after switching branches is almost always a stale
 `tsconfig.tsbuildinfo` — `npm run clean && npm install`.

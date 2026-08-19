@@ -1,0 +1,110 @@
+# Builds installers and attaches them to a GitHub Release.
+#
+# Nobody should need a toolchain to run OpenHarness. Push a tag, and this
+# produces the files a user actually wants: a Windows installer, a Windows
+# portable .exe, a Linux AppImage and .deb, and macOS .dmg/.zip.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Run it with workflow_dispatch first if you want to check the artifacts
+# without publishing anything — that path uploads to the workflow run instead
+# of creating a Release.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: ubuntu-latest
+            target: linux
+          - os: macos-latest
+            target: mac
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Build and package
+        run: npm run package:${{ matrix.target }}
+        env:
+          # electron-builder publishes by itself when it detects a token. We
+          # collect artifacts first and publish once, from a single job, so a
+          # half-finished matrix cannot leave a Release with only one OS in it.
+          GH_TOKEN: ''
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openharness-${{ matrix.target }}
+          path: |
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List what we are publishing
+        run: ls -lh artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            You do not need Node.js, npm, or a build toolchain. Download one file and run it.
+
+            | If you are on | Download |
+            |---|---|
+            | Windows | `OpenHarness-Setup-*.exe` — normal installer |
+            | Windows, no admin rights | `OpenHarness-*-portable-*.exe` — single file, nothing installed |
+            | Linux | `OpenHarness-*.AppImage` (`chmod +x` then run) or the `.deb` |
+            | macOS, Apple silicon | `OpenHarness-*-arm64.dmg` |
+            | macOS, Intel | `OpenHarness-*-x64.dmg` |
+
+            These builds are **not code-signed**. Windows SmartScreen will warn you:
+            choose *More info* then *Run anyway*. macOS will refuse the first launch:
+            right-click the app and choose *Open*. Signing certificates cost money and
+            this project does not have any yet.
+
+            Building from source is only necessary if you intend to change the code —
+            see `CONTRIBUTING.md`.
