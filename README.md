@@ -110,12 +110,13 @@ Wrote bom.csv
 ```
 
 That OVERFILLED_CAVITY error is itself a real finding: the actual reference
-document has a connector used as an in-line jumper (two wires per cavity, no
-splice) — possibly a legitimate pattern the rule is too strict about, flagged
-in a comment in `rules.ts` rather than silently special-cased away, per the
-review's evidence discipline (R2: these rules are "plausible engineering
-concerns, not matching the original's actual guardrails" until checked against
-the real app).
+document has a connector used as an in-line jumper — two wires per cavity, no
+splice. It was flagged in a comment in `rules.ts` rather than silently
+special-cased away, and the project's harness engineer has since ruled on it:
+the rule is right and the document is wrong, regardless of whether the combined
+gauge would fit the contact. See [`docs/DOMAIN-DECISIONS.md`](docs/DOMAIN-DECISIONS.md)
+D1. Rules that have not yet been through that process are marked as
+unvalidated rather than presented as established practice.
 
 **196 tests pass** across `core` (82), `io` (30), `cli` (21), and `render`
 (63). Along the way, fixing a Map-iteration-order false positive in the `.ohd`
@@ -283,6 +284,29 @@ should be made deliberately before the canvas work goes deeper:
 4. Rough NFR numbers — target doc size, startup budget (R25)
 5. PDF export spike, before the UI assumes it works (R20)
 
+## Contributing
+
+Contributions are welcome — [`CONTRIBUTING.md`](CONTRIBUTING.md) has the build
+invariants, the conventions that actually matter, and how to send a patch. If
+you want something to pick up, [`docs/tasks/`](docs/tasks/) holds self-contained
+packets with acceptance criteria.
+
+Harness engineering questions are especially welcome. Settled ones live in
+[`docs/DOMAIN-DECISIONS.md`](docs/DOMAIN-DECISIONS.md); open ones are listed at
+the bottom of that file.
+
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+- [`SECURITY.md`](SECURITY.md) — please report vulnerabilities privately
+
+## Disclaimer
+
+OpenHarness produces documentation for things that get built and energised.
+The design-rule checks are an aid, not an assurance: some are validated
+against a standard, some implement a recorded engineering decision, and some
+are explicitly unvalidated inference. **Nothing this tool outputs replaces
+engineering review.** Check the harness, not just the absence of a diagnostic.
+
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [`LICENSE`](LICENSE). No CLA; contributors keep their copyright and
+sign off commits under the [DCO](https://developercertificate.org/).
