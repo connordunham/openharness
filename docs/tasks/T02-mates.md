@@ -53,6 +53,9 @@ the component; the canvas draws what the scene gives it.
 `core/src/__tests__/mates.test.ts`
 
 - two mated 4-cavity connectors put cavity *n* of each on one net, for every n
+- an explicit `cavityMap` overrides positional pairing entirely
+- a `cavityMap` naming 2 of 4 cavities pairs exactly those 2 and leaves the
+  other 2 unpaired — no positional fallback for the remainder
 - a signal on one side propagates across the mate to the other
 - a mate between connectors with 4 and 6 cavities raises `MATE_CAVITY_COUNT`
   and still unions the 4 pairs it can — a bad mate degrades, it does not crash
@@ -66,9 +69,11 @@ the component; the canvas draws what the scene gives it.
 
 ## Traps
 
-- **Positional pairing, not by designation.** Two housings routinely label the
-  same physical position differently. Pairing by label mis-wires exactly the
-  connectors most likely to be bulkheads.
+- **Positional by DEFAULT, explicit when stated** — `DOMAIN-DECISIONS.md` D3,
+  which corrected an earlier assumption that positional was sufficient.
+  `Mate.cavityMap` overrides it entirely, and a partially specified map leaves
+  unnamed cavities unpaired rather than falling back to positional. Never infer
+  pairing from designations.
 - A mate is not a conductor. It must not appear in `wires`, must not get a
   length, and must not reach the BOM.
 - `doc.mates` is optional. Treat absent as empty everywhere; do not write an

@@ -23,10 +23,11 @@ For every populated cavity:
 4. Compare the total against the contact's `GaugeRange`.
 5. Report the total and the range in the document's own gauge unit.
 
-## The summation rule
+## The summation rule — engineer-confirmed (`DOMAIN-DECISIONS.md` D2)
 
-Two wires in one crimp occupy the sum of their areas — that is the physical
-fact the rule encodes, and it is why this cannot be done by comparing each
+Two wires in one crimp occupy the sum of their areas. Confirmed by the
+project's harness engineer, not assumed — it is the physical fact the rule
+encodes, and it is why this cannot be done by comparing each
 wire independently. Two 20 AWG wires do not fit a contact rated for a single
 20 AWG. Convert each to mm², add, then convert the total back for display.
 
@@ -47,6 +48,16 @@ directionally backwards.
 - no contact resolvable: no finding from this rule
 - wire with no gauge at all: no finding, and no crash
 - mixed units in one cavity (an AWG wire and an mm² wire) sum correctly
+
+## Overlap with OVERFILLED_CAVITY
+
+`OVERFILLED_CAVITY` (D1) already flags two wires in one cavity as an error,
+full stop. This rule is not redundant with it — summed gauge is still needed
+wherever a cavity legitimately carries more than one conductor, a backshell
+being the obvious case, and D1 exempts those.
+
+Expect both to fire on a double-crimped cavity. That is correct: they report
+different defects.
 
 ## Traps
 

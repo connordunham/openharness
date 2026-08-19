@@ -589,22 +589,41 @@ export interface ShieldTermination {
  * existed a bulkhead's two halves were unavoidably separate nets, which is
  * wrong in a way no amount of UI could paper over.
  *
- * Cavity correspondence is POSITIONAL, not by designation: mated connectors
- * pair their nth cavities. Designations are labels, and two mating housings
- * routinely label the same physical position differently (1..8 against A..H),
- * so pairing by label would mis-wire exactly the connectors most likely to be
- * bulkheads. The cavity-count validation exists to make positional pairing
- * safe.
+ * CAVITY CORRESPONDENCE — engineer-confirmed, see docs/DOMAIN-DECISIONS.md D3.
+ *
+ * Pairing is never inferred from designations. Two mating housings routinely
+ * label the same physical position differently (1..8 against A..H), so
+ * matching on labels would mis-wire exactly the connectors most likely to be
+ * bulkheads.
+ *
+ * Positional pairing — nth to nth — is the DEFAULT, and only a default. It is
+ * right often enough to be a sensible starting point and wrong often enough
+ * that the tool must not assert it: keyed housings, rotated inserts and
+ * mixed-density mates all break it. So `cavityMap` exists, it overrides the
+ * default entirely when present, and the UI must let the user edit it.
+ *
+ * A map that names only some cavities leaves the rest UNPAIRED rather than
+ * falling back to positional for the remainder. A half-specified map is a
+ * statement about the pairs it names, not an invitation to guess the others.
  */
+/** One explicit cavity pairing inside a Mate. */
+export interface MateCavityPair {
+  sourceCavityId: CavityId;
+  targetCavityId: CavityId;
+}
+
 export interface Mate {
   id: MateId;
   sourceId: ComponentId;
   targetId: ComponentId;
   /** Required only when mating a terminal INTO a connector cavity: a terminal
    * has one port, so the connector end needs to say which cavity receives it.
-   * Meaningless (and ignored) for connector-to-connector mates, where every
-   * cavity pairs positionally. */
+   * Meaningless (and ignored) for connector-to-connector mates. */
   targetCavityId?: CavityId;
+  /** Explicit cavity pairing for a connector-to-connector mate. Absent means
+   * positional. See the doc comment above for why this cannot be inferred
+   * from designations, and why positional is only a default. */
+  cavityMap?: MateCavityPair[];
   custom: Record<string, unknown>;
 }
 

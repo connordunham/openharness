@@ -108,21 +108,23 @@ function emptyBundle({ doc, bundleContents }: RuleInputs): Diagnostic[] {
 }
 
 /**
- * REAL-DATA FINDING (from running this against `_reference_harness_export.json`
- * via the CLI, not caught by any hand-built test): this rule fires on that
- * real user document — connector "ZWfYpO" has two wires landing on each of
- * its two cavities with no splice between them, which reads as the user
- * using a 2-cavity connector as an in-line jumper/pass-through rather than a
- * true termination. That might be a legitimate pattern in the source tool (some
- * real-world builds do land two wires in one crimp) rather than an actual
- * error, and there's no evidence either way — the review document (R2)
- * already flagged that these DRC rules are "plausible engineering concerns,
- * not matching the original's actual guardrails." Left as `error` rather
- * than downgraded, since getting it wrong loud (a false-positive error you
- * can see and dismiss) is safer than getting it wrong quiet (a real crimp
- * problem silently passing as a warning) — but this is exactly the kind of
- * thing worth checking against the live app's own validation UI next time
- * it's open, rather than guessing further from here.
+ * ENGINEER-CONFIRMED (2026-08-19 — see docs/DOMAIN-DECISIONS.md, D1). Two
+ * wires landing in one cavity with no splice is a defect, regardless of
+ * whether their combined gauge would fit the contact. `error` is the correct
+ * severity and this rule should not be softened.
+ *
+ * It fires on `_reference_harness_export.json`, where connector "ZWfYpO" has
+ * two wires on each of its two cavities — that document is using a 2-cavity
+ * connector as an in-line jumper. The DOCUMENT is wrong, not the rule.
+ *
+ * This previously carried a comment speculating that the pattern might be
+ * legitimate and the rule too strict. It isn't, and that speculation is
+ * removed rather than left to mislead the next reader into relaxing a rule
+ * that is doing its job.
+ *
+ * The backshell exemption below is separate and still correct: a backshell is
+ * a shell-level ground point, not a crimp cavity, and taking several drain
+ * wires at once is its normal use.
  */
 function overfilledCavity({ doc }: RuleInputs): Diagnostic[] {
   const out: Diagnostic[] = [];
