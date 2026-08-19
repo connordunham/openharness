@@ -11,6 +11,10 @@ further context — the agent reads the repo and its brief, nothing else.
 | [Domain auditor](domain-auditor.md) | high | once per quarter, and before any external release |
 | [Maintainer](maintainer.md) | mid | monthly, and on any advisory |
 
+Paste-ready kickoff prompts for all three of the per-change roles are in
+[KICKOFF.md](KICKOFF.md). Those are what you actually hand to an agent; the
+briefs below are what the agent reads once it arrives.
+
 ## How they fit together
 
 ```
