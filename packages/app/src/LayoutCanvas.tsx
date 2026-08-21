@@ -91,13 +91,14 @@
  * already used for whole-component hover.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
 import { newInstanceId, computeDerivedModel, endpointComponentId } from '@openharness/core';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
 import { useCanvasPan } from './canvasPan.js';
+import { useCanvasZoom } from './useCanvasZoom.js';
 import { SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
 
 const PX_PER_MM = 4;
@@ -640,7 +641,12 @@ export function LayoutCanvas({
   const [pendingBundleFrom, setPendingBundleFrom] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { onBackgroundMouseDown } = useCanvasPan(scrollRef);
+  // Zoom is per-pane and view-only (T04 contract): the state lives in the
+  // shared hook, never in the document. useCanvasPan owns the single wheel
+  // listener and classifies each event (B3); zoom events land in the hook's
+  // onWheelZoom, pan events scroll the container there.
+  const { panX, panY, scale, setContentSize, onWheelZoom } = useCanvasZoom(scrollRef);
+  const { onBackgroundMouseDown } = useCanvasPan(scrollRef, onWheelZoom);
 
   const doc = store.doc;
   const derived = computeDerivedModel(doc);
@@ -652,8 +658,11 @@ export function LayoutCanvas({
   const clientToMm = useCallback((clientX: number, clientY: number): Point => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
-    return toMm({ x: clientX - rect.left, y: clientY - rect.top });
-  }, []);
+    return toMm({
+      x: (clientX - rect.left) / scale,
+      y: (clientY - rect.top) / scale,
+    });
+  }, [scale]);
 
   /** Same as `clientToMm`, but in px (this file's on-screen SVG space) —
    * needed for dragging an inline pass-through component, since its
@@ -662,8 +671,11 @@ export function LayoutCanvas({
   const clientToPx = useCallback((clientX: number, clientY: number): Point => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }, []);
+    return {
+      x: (clientX - rect.left) / scale,
+      y: (clientY - rect.top) / scale,
+    };
+  }, [scale]);
 
   const wiresThroughComponent = useCallback(
     (componentId: string): string[] => {
@@ -806,8 +818,8 @@ export function LayoutCanvas({
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (dragging) {
-        const dxPx = e.clientX - dragging.pointerStartX;
-        const dyPx = e.clientY - dragging.pointerStartY;
+        const dxPx = (e.clientX - dragging.pointerStartX) / scale;
+        const dyPx = (e.clientY - dragging.pointerStartY) / scale;
         const dMm = toMm({ x: dxPx, y: dyPx });
         const x = dragging.posStartX + dMm.x;
         const y = dragging.posStartY + dMm.y;
@@ -816,8 +828,8 @@ export function LayoutCanvas({
           if (c) c.layoutPosition = { x, y };
         });
       } else if (draggingWaypoint) {
-        const dxPx = e.clientX - draggingWaypoint.pointerStartX;
-        const dyPx = e.clientY - draggingWaypoint.pointerStartY;
+        const dxPx = (e.clientX - draggingWaypoint.pointerStartX) / scale;
+        const dyPx = (e.clientY - draggingWaypoint.pointerStartY) / scale;
         const dMm = toMm({ x: dxPx, y: dyPx });
         const x = draggingWaypoint.posStartX + dMm.x;
         const y = draggingWaypoint.posStartY + dMm.y;
@@ -939,6 +951,11 @@ export function LayoutCanvas({
   const maxX = Math.max(500, ...placed.map((c) => toPx(c.layoutPosition!).x + HOVER_R + 140));
   const maxY = Math.max(360, ...placed.map((c) => toPx(c.layoutPosition!).y + HOVER_R + 100));
 
+  // Keep the zoom hook's pan/scroll clamp aware of the content extent.
+  useEffect(() => {
+    setContentSize(maxX, maxY);
+  }, [maxX, maxY, setContentSize]);
+
   // Inline pass-through components don't have their own position card — see
   // findInlinePassThroughs' doc comment; their `layoutPosition` field is
   // vestigial while eligible, and "Remove from layout" wouldn't remove
@@ -974,10 +991,23 @@ export function LayoutCanvas({
           onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
           onMouseDown={onBackgroundMouseDown}
         >
-          <div style={{ position: 'relative', width: maxX, height: maxY }}>
+          <div style={{ position: 'relative', width: maxX * scale, height: maxY * scale }}>
             <svg
               ref={svgRef}
-              width={maxX} height={maxY} style={s.svg}
+              width={maxX} height={maxY}
+              style={{
+                ...s.svg,
+                // The pan offsets are part of the transform, not a scroll
+                // position: the wheel handler solves zoomViewAboutCursor for
+                // exactly this composition (screen = canvas*scale + pan − scroll),
+                // so dropping the translate would make every zoom pivot on
+                // the top-left corner and throw the computed pan away. Order
+                // matters — CSS applies the list right-to-left, so scale
+                // first, then the screen-pixel translate.
+                transform: `translate(${panX}px, ${panY}px) scale(${scale})`,
+                transformOrigin: '0 0',
+                transition: 'none',
+              }}
               onClick={(e) => { if (e.target === e.currentTarget) setSelected(null); }}
             >
               <defs>

@@ -1,14 +1,3 @@
-# OpenHarness roadmap
-
-Derived from a full feature survey of the commercial wire-harness tool this
-project was originally specced against (`docs/HARNESS-DESIGNER-SPEC.md` §3
-records that original capture) — every documented view, component, part type,
-feature and release note, reviewed in August 2026.
-
-That tool's feature set is the most honest available yardstick for "what does
-a working harness tool actually need". This document turns the yardstick into
-an ordered plan. It deliberately names no product: the point is the
-capability list, not the competitor.
 
 ## How to read the status column
 
@@ -19,33 +8,6 @@ capability list, not the competitor.
 | **partial** | Something real exists but is materially narrower than the reference. |
 | **gap** | Not present in any form. |
 | **skip** | Deliberately not pursued — see [Non-goals](#non-goals). |
-
----
-
-## The filter: what not to copy
-
-The surveyed tool is a hosted, subscription, multi-tenant web app. A large
-part of its surface area exists because of that shape, not because harness
-engineering demands it. OpenHarness is local-first and automation-first
-(spec §1), so copying those features wholesale would import someone else's
-business model as though it were a requirement.
-
-Held to that line, the following are **non-goals** rather than backlog items:
-teams, seats and per-seat billing; email invitations; cloud sharing links and
-public harness embedding; the account/subscription/plan system; mobile
-read-only viewing; live multi-user presence and last-write-wins sync.
-
-Two of these deserve a second look on their own merits, and are listed in the
-phases below in a form that fits a local-first tool:
-
-- **Revisions** — theirs is a server-side snapshot store. For a tool
-  whose file format is already designed for clean git diffs (spec §10), the
-  same user need is met by git, and the interesting work is a *diff view*, not
-  a snapshot store.
-- **Parts Library** — theirs is a cloud catalog shared across a user's
-  harnesses. The same need locally is a catalog file plus a sync/compare
-  operation, which is strictly more useful because it can be version-controlled
-  and shared by any means the user already has.
 
 ---
 

@@ -32,10 +32,10 @@ would otherwise invent its own, differently wrong, version.
 
 | Packet | Title | Size | State |
 |---|---|---|---|
-| T01 | Gauge conversion | S | not started |
-| T02 | Mates | L | model landed, rest not started |
-| T03 | Wire-gauge-vs-contact validation | M | not started |
-| T04 | Zoom | M | not started |
+| T01 | Gauge conversion | S | ✅ complete |
+| T02 | Mates | L | ✅ complete |
+| T03 | Wire-gauge-vs-contact validation | M | ✅ complete |
+| T04 | Zoom | M | sent back by review — B1 (pan in transform), B2 (`clientToCanvas` scale-aware), B3 (input mapping) and B8 (scroll-offset anchor) fixed; B4 (fit-to-view/selection wiring) open (`docs/PHASE1-REVIEW.md`) |
 | T05 | Schematic ergonomics | M | not started |
 | T06 | View toggles and selection info | M | not started |
 | T07 | Search and destinations | L | not started |

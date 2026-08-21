@@ -53,13 +53,14 @@ import {
 import {
   computeSchematicScene, collectGroupMembers, shieldTerminationMarks, twistCrossoverPaths,
   waypointInsertIndex, type SceneNode, type SceneRow, type SceneWire,
-  ROW_HEIGHT, HEADER_HEIGHT,
+  ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas,
 } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid, autoRouteInLayout } from './layoutGrid.js';
 import { nextGridPosition, nextRefdes } from './schematicGrid.js';
 import { useCanvasPan } from './canvasPan.js';
+import { useCanvasZoom } from './useCanvasZoom.js';
 import { SHIELD_TYPES, SHIELD_TERMINATION_STYLES, SHIELD_MODELS } from './shieldConstants.js';
 import { PartCommonFields, ParasiticsFields } from './partFields.js';
 import { SYMBOL_NODE_TYPES, renderNodeSymbol } from './schematicSymbols.js';
@@ -461,22 +462,31 @@ export function SchematicCanvas({
   const [lasso, setLasso] = useState<Lasso | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const { onBackgroundMouseDown } = useCanvasPan(scrollRef);
+  // Zoom is per-pane and view-only (T04 contract): the state lives in the
+  // shared hook, never in the document. useCanvasPan owns the single wheel
+  // listener and classifies each event (B3); zoom events land in the hook's
+  // onWheelZoom, pan events scroll the container there.
+  const { panX, panY, scale, setContentSize, onWheelZoom } = useCanvasZoom(scrollRef);
+  const { onBackgroundMouseDown } = useCanvasPan(scrollRef, onWheelZoom);
 
   /**
    * Pointer position in canvas (SVG user) coordinates.
    *
-   * Reads the SVG's own bounding rect rather than using the scroll
-   * container's `scrollLeft`/`scrollTop`, so it stays correct regardless of
-   * how the canvas is positioned inside its scroller — and would keep
-   * working unchanged if a zoom transform were ever added, since a CSS/SVG
-   * transform is already reflected in `getBoundingClientRect`.
+   * Reads the SVG's own bounding rect rather than the scroll container's
+   * `scrollLeft`/`scrollTop`, so it stays correct regardless of how the
+   * canvas is positioned inside its scroller. The rect *does* reflect the
+   * zoom transform — that is the whole subtlety: it moves with the pan
+   * (so the pan cancels in the subtraction) but its distances are scaled,
+   * so the offset must be divided by `scale` to recover user units.
+   * Skipping that division made every absolute-position interaction —
+   * wire bend insert, bend drag, lasso — off by the zoom factor (review
+   * B2); node drags divide by `scale` below for the same reason.
    */
   const clientToCanvas = useCallback((clientX: number, clientY: number): Point => {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: clientX, y: clientY };
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }, []);
+    return clientPointToCanvas(clientX, clientY, rect, scale);
+  }, [scale]);
 
   const scene = computeSchematicScene(store.doc);
   const selectedComponent = selected?.kind === 'component' ? store.doc.components[selected.id] : undefined;
@@ -1080,8 +1090,8 @@ export function SchematicCanvas({
       }
 
       if (!dragging) return;
-      const dx = e.clientX - dragging.pointerStartX;
-      const dy = e.clientY - dragging.pointerStartY;
+      const dx = (e.clientX - dragging.pointerStartX) / scale;
+      const dy = (e.clientY - dragging.pointerStartY) / scale;
       const x = dragging.boxStartX + dx;
       const y = dragging.boxStartY + dy;
       if (dragging.kind === 'component') {
@@ -1228,6 +1238,11 @@ export function SchematicCanvas({
     ...scene.notes.map((n) => n.point.y + 200),
   );
 
+  // Keep the zoom hook's pan/scroll clamp aware of the content extent.
+  useEffect(() => {
+    setContentSize(maxX, maxY);
+  }, [maxX, maxY, setContentSize]);
+
   // Centroid of the current multi-selection, so the floating "Group" action
   // button appears roughly where the selected traces are, not pinned to a
   // fixed corner. Single-wire selections can be grouped too (Connor:
@@ -1302,10 +1317,25 @@ export function SchematicCanvas({
         onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
         onMouseDown={onBackgroundMouseDown}
       >
-        <div style={{ position: 'relative', width: maxX, height: maxY }}>
+        <div style={{ position: 'relative', width: maxX * scale, height: maxY * scale }}>
           <svg
             ref={svgRef}
-            width={maxX} height={maxY} style={s.canvasSvg}
+            width={maxX} height={maxY}
+            style={{
+              ...s.canvasSvg,
+              // Order matters: CSS applies the transform list right-to-left,
+              // so this scales about the origin first and then shifts by the
+              // pan offsets — which are in *screen* pixels, exactly what the
+              // wheel handler's zoomViewAboutCursor solves for (together with
+              // the container scroll; the two always sum to keep the zoomed
+              // point under the cursor). Omitting the translate makes every
+              // zoom pivot on the top-left corner and throws the computed
+              // pan away (the point under the cursor jumps on every wheel
+              // step).
+              transform: `translate(${panX}px, ${panY}px) scale(${scale})`,
+              transformOrigin: '0 0',
+              transition: 'none',
+            }}
             onMouseDown={(e) => { if (e.target === e.currentTarget) onBackgroundDown(e); }}
             onClick={(e) => {
               // Only deselect on clicks that land on the svg background

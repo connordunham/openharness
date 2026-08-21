@@ -1,7 +1,7 @@
 import { createEmptyDocument } from '../document.js';
 import type {
   HarnessDocument, Connector, Splice, Terminal, BranchPoint, TwoTerminal, Cable,
-  Wire, Bundle, Cavity, Endpoint, Point,
+  Wire, Bundle, Cavity, Endpoint, Point, TerminalKind,
 } from '../types.js';
 
 /** Small builder for constructing minimal documents in tests without the ceremony of the full type. */
@@ -26,8 +26,13 @@ export function splice(id: string, refdes: string, overrides: Partial<Splice> = 
   return { id, type: 'splice', refdes, custom: {}, ...overrides };
 }
 
-export function terminal(id: string, refdes: string, overrides: Partial<Terminal> = {}): Terminal {
-  return { id, type: 'terminal', refdes, terminalKind: 'ring', custom: {}, ...overrides };
+export function terminal(
+  id: string,
+  refdes: string,
+  terminalKind: TerminalKind = 'ring',
+  overrides: Partial<Terminal> = {},
+): Terminal {
+  return { id, type: 'terminal', refdes, terminalKind, custom: {}, ...overrides };
 }
 
 export function branchPoint(id: string, refdes: string, layoutPosition: Point): BranchPoint {
@@ -81,6 +86,10 @@ export function cableCoreEndpoint(componentId: string, coreId: string): Endpoint
 
 export function twoTerminalEndpoint(componentId: string, side: 'Left' | 'Right'): Endpoint {
   return { kind: 'twoTerminalSide', componentId, side };
+}
+
+export function terminalEndpoint(componentId: string): Endpoint {
+  return { kind: 'terminalPoint', componentId };
 }
 
 export function freeEndpoint(point: Point = { x: 0, y: 0 }): Endpoint {

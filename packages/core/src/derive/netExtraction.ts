@@ -74,6 +74,65 @@ export function extractNets(doc: HarnessDocument): NetExtractionResult {
     if (group.shield?.terminationNode) uf.add(`shieldNode:${group.id}`);
   }
 
+  // 1c. Mate cavity pairs (D3 ruling: positional pairing by default, explicit
+  //     when cavityMap is present; partial maps leave unnamed cavities unpaired).
+  //     A terminal mated into a cavity unions the terminal's vertex with that
+  //     cavity's. This runs before wire union so signal propagation across a mate
+  //     happens in the global merge, not before it.
+  for (const mate of Object.values(doc.mates ?? {})) {
+    const source = doc.components[mate.sourceId];
+    const target = doc.components[mate.targetId];
+    if (!source || !target) continue; // Skip mates to deleted components
+
+    // Terminal-into-cavity mate: terminal's terminalPoint unions with target cavity
+    if (source.type === 'terminal' && target.type === 'connector') {
+      if (mate.targetCavityId) {
+        const terminalKey = `terminalPoint:${mate.sourceId}`;
+        const cavityKey = `cavity:${mate.targetId}:${mate.targetCavityId}`;
+        uf.add(terminalKey);
+        uf.add(cavityKey);
+        uf.union(terminalKey, cavityKey);
+      }
+    }
+    // Terminal-to-terminal mate (ring↔ring, spade↔spade, quick-connect pair…):
+    // the whole point of such a mate is that the two terminals are electrically
+    // joined — a ring-to-ring splice that validated but left each terminal on
+    // its own net would connect nothing. Union the two terminal vertices.
+    else if (source.type === 'terminal' && target.type === 'terminal') {
+      const sourceKey = `terminalPoint:${mate.sourceId}`;
+      const targetKey = `terminalPoint:${mate.targetId}`;
+      uf.add(sourceKey);
+      uf.add(targetKey);
+      uf.union(sourceKey, targetKey);
+    }
+    // Connector-to-connector mate: pair cavities according to cavityMap or positional
+    else if (source.type === 'connector' && target.type === 'connector') {
+      const sourceCavities = source.cavities;
+      const targetCavities = target.cavities;
+
+      if (mate.cavityMap && mate.cavityMap.length > 0) {
+        // Explicit mapping: union only pairs named in cavityMap
+        for (const pair of mate.cavityMap) {
+          const sourceKey = `cavity:${mate.sourceId}:${pair.sourceCavityId}`;
+          const targetKey = `cavity:${mate.targetId}:${pair.targetCavityId}`;
+          uf.add(sourceKey);
+          uf.add(targetKey);
+          uf.union(sourceKey, targetKey);
+        }
+      } else {
+        // Positional pairing (default): nth cavity of each side
+        const pairCount = Math.min(sourceCavities.length, targetCavities.length);
+        for (let i = 0; i < pairCount; i++) {
+          const sourceKey = `cavity:${mate.sourceId}:${sourceCavities[i]!.id}`;
+          const targetKey = `cavity:${mate.targetId}:${targetCavities[i]!.id}`;
+          uf.add(sourceKey);
+          uf.add(targetKey);
+          uf.union(sourceKey, targetKey);
+        }
+      }
+    }
+  }
+
   // 2. Union across every wire.
   for (const [wireId, wire] of Object.entries(doc.wires)) {
     const a = endpointKey(wire.source, wireId, 'source');
@@ -84,6 +143,7 @@ export function extractNets(doc: HarnessDocument): NetExtractionResult {
   }
 
   // 3. Global-signal merge: same signal name, global:true, anywhere in the document.
+  //    This runs after mates so signal propagation across a mate happens here.
   const globalGroups = new Map<string, string[]>();
   for (const [vertexKey, src] of sourceRegistry) {
     if (src.global && src.signal) {
