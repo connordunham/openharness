@@ -45,6 +45,7 @@ import type {
   HarnessStore, Endpoint, Component, Connector, Point, HarnessDocument,
   SpliceKind, TerminalKind, ConnectorPart, ConnectorConfiguration, ConnectorHousingShape, PartId, WireGroup, WirePart,
   ShieldPart, ShieldType, ShieldTermination, Shield, ShieldModel, Part, SignalDirection, Parasitics,
+  Mate,
 } from '@openharness/core';
 import {
   newInstanceId, newPartId, endpointComponentId, formatSi,
@@ -52,8 +53,9 @@ import {
 } from '@openharness/core';
 import {
   computeSchematicScene, collectGroupMembers, shieldTerminationMarks, twistCrossoverPaths,
-  waypointInsertIndex, type SceneNode, type SceneRow, type SceneWire,
-  ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas,
+  waypointInsertIndex, segmentIntersectsRect, type SceneNode, type SceneRow, type SceneWire,
+  ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas, exceedsDragThreshold,
+  schematicContentRects, schematicSelectionRects, type SchematicSelectionItem,
 } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
@@ -64,6 +66,11 @@ import { useCanvasZoom } from './useCanvasZoom.js';
 import { SHIELD_TYPES, SHIELD_TERMINATION_STYLES, SHIELD_MODELS } from './shieldConstants.js';
 import { PartCommonFields, ParasiticsFields } from './partFields.js';
 import { SYMBOL_NODE_TYPES, renderNodeSymbol } from './schematicSymbols.js';
+import {
+  addMateInDraft, deleteMateInDraft, removeMatesOfComponentInDraft,
+  setMateTargetCavityInDraft, addMateCavityPairInDraft, updateMateCavityPairInDraft,
+  removeMateCavityPairInDraft, clearMateCavityMapInDraft,
+} from './mateOps.js';
 
 interface Props {
   store: HarnessStore;
@@ -102,11 +109,25 @@ interface PendingWire {
 
 const SHIELD_ROW = '__shieldNode__';
 
+/**
+ * A mate being created by clicking two components in sequence (the same
+ * two-click gesture as drawing a wire). `componentId` is the first clicked
+ * component; a click on any second component completes the mate. If that
+ * second click lands on a connector cavity row, the cavity is passed along
+ * too — addMateInDraft is the only place the direction and cavity semantics
+ * are interpreted (it keeps the cavity only for terminal-into-connector
+ * mates and always writes the terminal as the source).
+ */
+interface PendingMate {
+  componentId: string;
+}
+
 type Selection =
   | { kind: 'component'; id: string }
   | { kind: 'note'; id: string }
   | { kind: 'wire'; id: string }
   | { kind: 'group'; id: string }
+  | { kind: 'mate'; id: string }
   | null;
 
 interface Dragging {
@@ -152,13 +173,16 @@ interface Lasso {
   additive: boolean;
 }
 
-/** Pointer travel (px) that separates a click from a drag. */
+/** Pointer travel (screen px) that separates a click from a drag. A pixel
+ * budget, not a canvas-unit one — hand jitter happens in screen pixels
+ * regardless of zoom, so the comparison must scale with the view
+ * (`exceedsDragThreshold`, review concern C9). */
 const DRAG_THRESHOLD = 3;
 
 interface ContextMenuState {
   x: number;
   y: number;
-  target: { kind: 'component' | 'wire' | 'group' | 'note'; id: string };
+  target: { kind: 'component' | 'wire' | 'group' | 'note' | 'mate'; id: string };
 }
 
 const SPLICE_KINDS: SpliceKind[] = ['crimp', 'weld', 'solderSleeve'];
@@ -197,7 +221,7 @@ const WIRE_COLORS = [
  * component type, currently it only works on wires/groups"), which is why
  * `parseKey`'s union grew a third member.
  */
-type SelectableKind = 'wire' | 'group' | 'component';
+type SelectableKind = 'wire' | 'group' | 'component' | 'mate';
 
 function wireKey(id: string): string {
   return `wire:${id}`;
@@ -208,11 +232,14 @@ function groupKey(id: string): string {
 function componentKey(id: string): string {
   return `component:${id}`;
 }
+function mateKey(id: string): string {
+  return `mate:${id}`;
+}
 function parseKey(key: string): { kind: SelectableKind; id: string } | null {
   const i = key.indexOf(':');
   if (i < 0) return null;
   const kind = key.slice(0, i);
-  if (kind !== 'wire' && kind !== 'group' && kind !== 'component') return null;
+  if (kind !== 'wire' && kind !== 'group' && kind !== 'component' && kind !== 'mate') return null;
   return { kind, id: key.slice(i + 1) };
 }
 
@@ -241,6 +268,9 @@ function deleteComponentInDraft(draft: HarnessDocument, componentId: string): vo
       deleteWireInDraft(draft, wireId);
     }
   }
+  // A mate naming a deleted component would linger as an invisible, unselectable
+  // entry — drop it too (see removeMatesOfComponentInDraft).
+  removeMatesOfComponentInDraft(draft, componentId);
 }
 
 /** The termination detail for one end of a shield: that end's own override
@@ -432,6 +462,10 @@ export function SchematicCanvas({
   const [selected, setSelected] = useState<Selection>(null);
   const [multiSelect, setMultiSelect] = useState<Set<string>>(new Set());
   const [pendingWire, setPendingWire] = useState<PendingWire | null>(null);
+  // Mate creation is a two-click gesture like wiring (see PendingMate). It is
+  // mutually exclusive with a pending wire: both would compete for the same
+  // "next port/component click", so starting one cancels the other.
+  const [pendingMate, setPendingMate] = useState<PendingMate | null>(null);
   const [dragging, setDragging] = useState<Dragging | null>(null);
   const [inspectorTab, setInspectorTab] = useState<'edit' | 'properties'>('edit');
   const [editingCavity, setEditingCavity] = useState<{ componentId: string; cavityId: string } | null>(null);
@@ -466,7 +500,7 @@ export function SchematicCanvas({
   // shared hook, never in the document. useCanvasPan owns the single wheel
   // listener and classifies each event (B3); zoom events land in the hook's
   // onWheelZoom, pan events scroll the container there.
-  const { panX, panY, scale, setContentSize, onWheelZoom } = useCanvasZoom(scrollRef);
+  const { panX, panY, scale, setContentSize, onWheelZoom, fitTo } = useCanvasZoom(scrollRef);
   const { onBackgroundMouseDown } = useCanvasPan(scrollRef, onWheelZoom);
 
   /**
@@ -493,8 +527,10 @@ export function SchematicCanvas({
   const selectedNote = selected?.kind === 'note' ? store.doc.notes[selected.id] : undefined;
   const selectedWire = selected?.kind === 'wire' ? scene.wires.find((w) => w.wireId === selected.id) : undefined;
   const selectedGroup = selected?.kind === 'group' ? store.doc.wireGroups[selected.id] : undefined;
+  const selectedMate = selected?.kind === 'mate' ? store.doc.mates?.[selected.id] : undefined;
   const selectedNode = selectedComponent ? scene.nodes.find((n) => n.componentId === selectedComponent.id) : undefined;
   const selectedSceneNote = selectedNote ? scene.notes.find((n) => n.noteId === selectedNote.id) : undefined;
+  const selectedSceneMate = selectedMate ? scene.mates.find((m) => m.mateId === selectedMate.id) : undefined;
 
   // Wires bundled by their WireGroup (spec: twist/cable grouping), so the
   // canvas can draw a shared "bundle" halo behind every member's own routed
@@ -686,8 +722,48 @@ export function SchematicCanvas({
     [store, selectAndEdit],
   );
 
+  /**
+   * Start creating a mate from a component (right-click -> "Create mate").
+   * Cancels any pending wire — the two gestures share the "next click wins"
+   * slot and can't both be live.
+   */
+  const beginMate = useCallback((componentId: string) => {
+    setPendingWire(null);
+    setPendingMate({ componentId });
+  }, []);
+
+  /**
+   * Complete a pending mate against a second component. The actual direction
+   * normalisation and cavity semantics live in addMateInDraft; this just
+   * drives the transaction and selects the result. Completing against the
+   * same component the gesture started on cancels it (same convention as
+   * clicking the same port twice cancels a wire).
+   */
+  const completeMate = useCallback(
+    (targetComponentId: string, cavityId?: string) => {
+      if (!pendingMate) return;
+      const sourceComponentId = pendingMate.componentId;
+      setPendingMate(null);
+      if (sourceComponentId === targetComponentId) return;
+      let newId: string | null = null;
+      store.transact('Add mate', (draft) => {
+        newId = addMateInDraft(draft, sourceComponentId, targetComponentId, cavityId);
+      });
+      if (newId) selectAndEdit({ kind: 'mate', id: newId });
+    },
+    [pendingMate, store, selectAndEdit],
+  );
+
   const onRowClick = useCallback(
     (node: SceneNode, row: SceneRow) => {
+      // While a mate is pending, a port click completes it against the port's
+      // component — remembering the cavity in case it's terminal-into-
+      // connector (addMateInDraft decides whether the cavity applies).
+      if (pendingMate) {
+        const cavityId = node.type === 'connector' && row.rowId !== BACKSHELL_CAVITY_ID ? row.rowId : undefined;
+        completeMate(node.componentId, cavityId);
+        return;
+      }
       const endpoint = rowEndpoint(node, row);
       if (!pendingWire) {
         setPendingWire({ componentId: node.componentId, rowId: row.rowId, endpoint });
@@ -713,7 +789,7 @@ export function SchematicCanvas({
       });
       setPendingWire(null);
     },
-    [pendingWire, store],
+    [pendingWire, pendingMate, completeMate, store],
   );
 
   // Shift-click seeds the multi-select set from whatever's already singly
@@ -730,6 +806,7 @@ export function SchematicCanvas({
       if (selected?.kind === 'wire') next.add(wireKey(selected.id));
       else if (selected?.kind === 'group') next.add(groupKey(selected.id));
       else if (selected?.kind === 'component') next.add(componentKey(selected.id));
+      else if (selected?.kind === 'mate') next.add(mateKey(selected.id));
     },
     [selected],
   );
@@ -778,6 +855,25 @@ export function SchematicCanvas({
     },
     [toggleInMultiSelect, selectSingle],
   );
+
+  const onMateClick = useCallback(
+    (mateId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setContextMenu(null);
+      if (e.shiftKey) { toggleInMultiSelect(mateKey(mateId)); return; }
+      selectSingle({ kind: 'mate', id: mateId });
+    },
+    [toggleInMultiSelect, selectSingle],
+  );
+
+  const onMateContextMenu = useCallback((mateId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMultiSelect(new Set());
+    setSelected({ kind: 'mate', id: mateId });
+    setInspectorOpen(false);
+    setContextMenu({ x: e.clientX, y: e.clientY, target: { kind: 'mate', id: mateId } });
+  }, []);
 
   // ---------------------------------------------------------------------
   // Manual wire routing — drag-to-bend
@@ -891,8 +987,13 @@ export function SchematicCanvas({
       const parsed = parseKey(key);
       if (!parsed) continue;
       if (parsed.kind === 'wire') wireIds.push(parsed.id);
-      else groupIds.push(parsed.id);
+      else if (parsed.kind === 'group') groupIds.push(parsed.id);
+      // Components and mates cannot be WireGroup members — a lasso that caught
+      // them alongside wires still groups the wires, and ignores the rest.
+      // (Previously every non-wire key landed in memberGroupIds, which
+      // silently stored component ids there.)
     }
+    if (wireIds.length + groupIds.length === 0) return;
     // A twist only means something for 2+ conductors — a lone wire can't
     // twist around itself. Grouping just one wire defaults to `kind:
     // 'cable'` instead, which is exactly the shape a single shielded
@@ -971,6 +1072,10 @@ export function SchematicCanvas({
     (node: SceneNode, e: React.MouseEvent) => {
       e.stopPropagation();
       setContextMenu(null);
+      // While a mate is pending, clicking any component box completes the
+      // mate against it (clicking the starting component cancels, per
+      // completeMate) instead of selecting/dragging the node.
+      if (pendingMate) { completeMate(node.componentId); return; }
       // Shift-click extends the selection instead of starting a drag
       // (Connor: "extend shift-click to any component type"). Starting a
       // drag as well would move the node the instant the user nudged the
@@ -983,7 +1088,7 @@ export function SchematicCanvas({
         boxStartX: node.x, boxStartY: node.y,
       });
     },
-    [select, toggleInMultiSelect],
+    [select, toggleInMultiSelect, pendingMate, completeMate],
   );
 
   const onNodeContextMenu = useCallback((node: SceneNode, e: React.MouseEvent) => {
@@ -1061,11 +1166,15 @@ export function SchematicCanvas({
       // A wire mousedown that has now travelled far enough to be a drag:
       // create the bend and hand off to the bend-drag branch below. Doing
       // this here rather than on mousedown is what keeps a plain click on a
-      // trace from silently inserting a bend.
+      // trace from silently inserting a bend. The travel test runs in
+      // screen pixels (C9): `p` and the origin are canvas points, so the
+      // canvas-unit delta is scaled before comparison — at 25% zoom the
+      // old canvas-unit test read 1 px of jitter as 4 units and bent the
+      // wire on a plain click.
       const pending = pendingBend.current;
       if (pending && !bendDrag) {
         const p = clientToCanvas(e.clientX, e.clientY);
-        if (Math.abs(p.x - pending.origin.x) > DRAG_THRESHOLD || Math.abs(p.y - pending.origin.y) > DRAG_THRESHOLD) {
+        if (exceedsDragThreshold(p.x - pending.origin.x, p.y - pending.origin.y, scale, DRAG_THRESHOLD)) {
           store.transact('Bend wire', (draft) => {
             const w = draft.wires[pending.wireId];
             if (!w) return;
@@ -1106,7 +1215,7 @@ export function SchematicCanvas({
         });
       }
     },
-    [dragging, store, lasso, bendDrag, clientToCanvas],
+    [dragging, store, lasso, bendDrag, clientToCanvas, scale],
   );
 
   /** Everything the marquee currently covers, as multi-select keys. */
@@ -1122,9 +1231,14 @@ export function SchematicCanvas({
           keys.push(componentKey(n.componentId));
         }
       }
+      // A mate is one straight segment — exact segment/rect clip, see
+      // segmentIntersectsRect for why sampling points isn't enough.
+      for (const m of scene.mates) {
+        if (segmentIntersectsRect(m.from, m.to, r)) keys.push(mateKey(m.mateId));
+      }
       return keys;
     },
-    [scene.wires, scene.nodes],
+    [scene.wires, scene.nodes, scene.mates],
   );
 
   const onMouseUp = useCallback(() => {
@@ -1132,10 +1246,16 @@ export function SchematicCanvas({
       const r = lassoRect(lasso);
       // A marquee that never actually opened is a click on empty canvas —
       // deselect, matching what clicking the background did before lassoing
-      // existed.
-      if (r.width < DRAG_THRESHOLD && r.height < DRAG_THRESHOLD) {
+      // existed. It also cancels a pending mate: clicking nothing is the
+      // natural "never mind" for the two-click gesture. "Never opened" is
+      // the same screen-pixel test as the wire-bend click guard (C9): the
+      // lasso rect is in canvas units, so at 25% zoom the old canvas-unit
+      // comparison read 2 px of jitter as an 8-unit marquee and ran a
+      // selection instead of deselecting.
+      if (!exceedsDragThreshold(r.width, r.height, scale, DRAG_THRESHOLD)) {
         setSelected(null);
         setMultiSelect(new Set());
+        setPendingMate(null);
       } else {
         const hits = lassoHits(lasso);
         setMultiSelect((prev) => {
@@ -1150,7 +1270,7 @@ export function SchematicCanvas({
     pendingBend.current = null;
     setBendDrag(null);
     setDragging(null);
-  }, [lasso, lassoHits]);
+  }, [lasso, lassoHits, scale]);
 
   const deleteSelected = useCallback(() => {
     if (!selected) return;
@@ -1181,6 +1301,10 @@ export function SchematicCanvas({
         }
         delete draft.wireGroups[selected.id];
       });
+    } else if (selected.kind === 'mate') {
+      store.transact('Delete mate', (draft) => {
+        deleteMateInDraft(draft, selected.id);
+      });
     } else {
       store.transact('Delete component', (draft) => {
         deleteComponentInDraft(draft, selected.id);
@@ -1196,18 +1320,21 @@ export function SchematicCanvas({
    * components — deleting a component also deletes its wires, and doing
    * components first would leave the wire pass iterating ids that no longer
    * exist (harmless, but it would also silently skip the group cleanup those
-   * wires needed).
+   * wires needed). Mates last: deleteComponentInDraft already drops the
+   * deleted components' mates, so a mate deleted twice is a no-op.
    */
   const deleteMultiSelection = useCallback(() => {
     if (multiSelect.size === 0) return;
     const wires: string[] = [];
     const groups: string[] = [];
     const components: string[] = [];
+    const mates: string[] = [];
     for (const key of multiSelect) {
       const parsed = parseKey(key);
       if (!parsed) continue;
       if (parsed.kind === 'wire') wires.push(parsed.id);
       else if (parsed.kind === 'group') groups.push(parsed.id);
+      else if (parsed.kind === 'mate') mates.push(parsed.id);
       else components.push(parsed.id);
     }
     store.transact(`Delete ${multiSelect.size} item${multiSelect.size === 1 ? '' : 's'}`, (draft) => {
@@ -1222,6 +1349,7 @@ export function SchematicCanvas({
         delete draft.wireGroups[groupId];
       }
       for (const componentId of components) deleteComponentInDraft(draft, componentId);
+      for (const mateId of mates) deleteMateInDraft(draft, mateId);
     });
     setMultiSelect(new Set());
     setSelected(null);
@@ -1243,6 +1371,32 @@ export function SchematicCanvas({
     setContentSize(maxX, maxY);
   }, [maxX, maxY, setContentSize]);
 
+  // Fit-to-view / fit-to-selection (review B4): the rect collection is pure
+  // scene geometry (render/sceneBounds), the scale+pan+scroll solve is
+  // `fitView` in zoomGeometry, and `fitTo` applies the result to this pane's
+  // zoom state + scroll container. Fit-to-selection prefers the multi-select
+  // set when it's non-empty (a lasso clears the single selection, and a
+  // single click clears the multi set, so the two are normally exclusive —
+  // preferring multiSelect makes the shift-click-adjust case predictable).
+  const fitToView = useCallback(() => {
+    fitTo(schematicContentRects(scene));
+  }, [fitTo, scene]);
+
+  const hasSelection = multiSelect.size > 0 || selected !== null;
+
+  const fitToSelection = useCallback(() => {
+    const items: SchematicSelectionItem[] = [];
+    if (multiSelect.size > 0) {
+      for (const key of multiSelect) {
+        const parsed = parseKey(key);
+        if (parsed) items.push(parsed);
+      }
+    } else if (selected) {
+      items.push(selected);
+    }
+    fitTo(schematicSelectionRects(scene, store.doc, items));
+  }, [fitTo, scene, store.doc, multiSelect, selected]);
+
   // Centroid of the current multi-selection, so the floating "Group" action
   // button appears roughly where the selected traces are, not pinned to a
   // fixed corner. Single-wire selections can be grouped too (Connor:
@@ -1261,6 +1415,9 @@ export function SchematicCanvas({
       } else if (parsed.kind === 'component') {
         const nd = scene.nodes.find((sn) => sn.componentId === parsed.id);
         if (nd) { sx += nd.x + nd.width / 2; sy += nd.y + nd.height / 2; n++; }
+      } else if (parsed.kind === 'mate') {
+        const m = scene.mates.find((sm) => sm.mateId === parsed.id);
+        if (m) { sx += m.midpoint.x; sy += m.midpoint.y; n++; }
       } else {
         const g = store.doc.wireGroups[parsed.id];
         const members = g ? wiresByGroup.get(g.id) : undefined;
@@ -1272,9 +1429,9 @@ export function SchematicCanvas({
   }
 
   /** How much of the current multi-selection each floating action applies
-   * to. "Groupable" is wires and existing groups only — a connector can't be
-   * a member of a WireGroup, so a lasso that caught both wires and their
-   * connectors must still offer "Group" for the wires rather than going
+   * to. "Groupable" is wires and existing groups only — a connector or a mate
+   * can't be a member of a WireGroup, so a lasso that caught both wires and
+   * their connectors must still offer "Group" for the wires rather than going
    * inert. */
   const twistStyle = store.doc.settings.twistedPairStyle ?? 'ieee315';
 
@@ -1282,7 +1439,7 @@ export function SchematicCanvas({
     let groupable = 0;
     for (const key of multiSelect) {
       const parsed = parseKey(key);
-      if (parsed && parsed.kind !== 'component') groupable++;
+      if (parsed && (parsed.kind === 'wire' || parsed.kind === 'group')) groupable++;
     }
     return { groupable, total: multiSelect.size };
   })();
@@ -1297,10 +1454,26 @@ export function SchematicCanvas({
         <AddButton icon="resistor" label="Resistor" onClick={() => addTwoTerminal('resistor')} />
         <AddButton icon="diode" label="Diode" onClick={() => addTwoTerminal('diode')} />
         <AddButton icon="note" label="Note" onClick={addNote} />
+        {/* Fit-to-view / fit-to-selection (review B4) — view-only, so plain
+            buttons on the toolbar rather than document mutations. */}
+        <button style={s.viewBtn(true)} onClick={fitToView} title="Zoom and pan so the whole harness is visible">
+          Fit view
+        </button>
+        <button
+          style={s.viewBtn(hasSelection)} onClick={fitToSelection} disabled={!hasSelection}
+          title={hasSelection ? 'Zoom and pan so the selection is visible' : 'Select something first'}
+        >
+          Fit selection
+        </button>
         {pendingWire && (
           <span style={s.wireHint}>Click a port to finish the wire, or click it again to cancel.</span>
         )}
-        {!pendingWire && multiSelect.size === 0 && (
+        {pendingMate && (
+          <span style={s.wireHint}>
+            Click another connector or terminal to create the mate — click the same one again, or empty space, to cancel.
+          </span>
+        )}
+        {!pendingWire && !pendingMate && multiSelect.size === 0 && (
           <span style={s.wireHint}>
             Drag a wire to bend it · alt-click a bend to remove · drag empty space to lasso · alt-drag to pan
           </span>
@@ -1352,6 +1525,7 @@ export function SchematicCanvas({
               if (e.target === e.currentTarget && !lasso && e.altKey) {
                 setSelected(null);
                 setMultiSelect(new Set());
+                setPendingMate(null);
               }
             }}
           >
@@ -1503,6 +1677,54 @@ export function SchematicCanvas({
                       <title>Drag to move this bend · alt-click to remove it</title>
                     </circle>
                   ))}
+                </g>
+              );
+            })}
+
+            {/* Mates (T02) — dashed and distinctly coloured because a mate is
+                a mating relationship, NOT a conductor: no wire, no length, no
+                net trace. Drawn under the nodes (like wires) so the component
+                boxes own the pointer wherever they overlap; the visible span
+                is the part between the boxes, which reads as "these two plug
+                into each other". The fat transparent line is the hit target —
+                click selects, shift-click multi-selects, right-click opens
+                the menu, same contract as a wire's trace. */}
+            {scene.mates.map((m) => {
+              const isSelected = (selected?.kind === 'mate' && selected.id === m.mateId)
+                || multiSelect.has(mateKey(m.mateId));
+              const color = isSelected ? theme.color.accent : theme.color.mate;
+              return (
+                <g key={`mate:${m.mateId}`}>
+                  <line
+                    x1={m.from.x} y1={m.from.y} x2={m.to.x} y2={m.to.y}
+                    stroke="transparent" strokeWidth={12}
+                    style={{ cursor: 'pointer' }}
+                    onClick={(e) => onMateClick(m.mateId, e)}
+                    onContextMenu={(e) => onMateContextMenu(m.mateId, e)}
+                  >
+                    <title>
+                      {`${m.sourceRefdes} ↔ ${m.targetRefdes} — mate (${m.mapped ? 'explicit cavity map' : 'positional pairing, the default'})`}
+                    </title>
+                  </line>
+                  <line
+                    x1={m.from.x} y1={m.from.y} x2={m.to.x} y2={m.to.y}
+                    stroke={color}
+                    strokeWidth={isSelected ? 2.4 : 1.6}
+                    strokeDasharray="6 4"
+                    strokeLinecap="round"
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  {/* Endpoint ticks so the direction of the join is legible
+                      even where the boxes crowd the line. */}
+                  <circle cx={m.from.x} cy={m.from.y} r={3} fill={color} style={{ pointerEvents: 'none' }} />
+                  <circle cx={m.to.x} cy={m.to.y} r={3} fill={color} style={{ pointerEvents: 'none' }} />
+                  <text
+                    x={m.midpoint.x} y={m.midpoint.y - 6}
+                    textAnchor="middle" fontSize={9.5} fontWeight={600}
+                    fill={color} style={{ pointerEvents: 'none' }}
+                  >
+                    {m.mapped ? 'mate · mapped' : 'mate'}
+                  </text>
                 </g>
               );
             })}
@@ -2092,6 +2314,17 @@ export function SchematicCanvas({
             </div>
           )}
 
+          {selectedMate && selectedSceneMate && selected?.kind === 'mate' && inspectorOpen && (
+            <div style={{ position: 'absolute', left: selectedSceneMate.midpoint.x, top: selectedSceneMate.midpoint.y + 14, zIndex: 3 }}>
+              <MateInspector
+                store={store}
+                mate={selectedMate}
+                onDelete={deleteSelected}
+                onClose={() => setInspectorOpen(false)}
+              />
+            </div>
+          )}
+
           {contextMenu && (
             <ContextMenu
               state={contextMenu}
@@ -2103,6 +2336,7 @@ export function SchematicCanvas({
               onUngroupWire={removeWireFromGroup}
               onUngroup={ungroupWires}
               onAutoRoute={clearBends}
+              onStartMate={beginMate}
             />
           )}
         </div>
@@ -3020,6 +3254,163 @@ function GroupInspector({
   );
 }
 
+/**
+ * Mate properties (T02): which two components are mated, and — the heart of
+ * it — how their cavities correspond. Positional pairing (nth to nth) is only
+ * a DEFAULT, never an assertion (DOMAIN-DECISIONS D3): an explicit cavity map
+ * overrides it entirely, and any cavity the map does not name stays UNPAIRED
+ * rather than falling back to positional. Both the receiving cavity (for a
+ * terminal mated into a connector) and the map itself are editable here,
+ * because D3 requires the user to be able to override the default.
+ */
+function MateInspector({
+  store, mate, onDelete, onClose,
+}: {
+  store: HarnessStore;
+  mate: Mate;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const source = store.doc.components[mate.sourceId];
+  const target = store.doc.components[mate.targetId];
+  const sourceCavities = source?.type === 'connector' ? source.cavities : [];
+  const targetCavities = target?.type === 'connector' ? target.cavities : [];
+  const isTerminalIntoConnector = source?.type === 'terminal' && target?.type === 'connector';
+  const isConnectorToConnector = source?.type === 'connector' && target?.type === 'connector';
+  const cavityMap = mate.cavityMap ?? [];
+
+  return (
+    <div style={s.card}>
+      <div style={s.cardHeader}>
+        <span style={{ ...s.cardTitle, color: theme.color.mate }}>Mate</span>
+        <span style={{ fontSize: 12, color: theme.color.textMuted }}>
+          {source?.refdes ?? '?'} ↔ {target?.refdes ?? '?'}
+        </span>
+        <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
+      </div>
+      <div style={s.cardBody}>
+        {isTerminalIntoConnector && (
+          <>
+            <label style={s.fieldLabel}>Cavity receiving the terminal ({target?.refdes})</label>
+            <select
+              style={s.input}
+              value={mate.targetCavityId ?? ''}
+              onChange={(e) => {
+                const value = e.target.value || undefined;
+                store.transact('Set mate cavity', (draft) => {
+                  setMateTargetCavityInDraft(draft, mate.id, value);
+                });
+              }}
+            >
+              <option value="">— choose a cavity —</option>
+              {targetCavities.map((cav) => (
+                <option key={cav.id} value={cav.id}>{cav.designation}</option>
+              ))}
+            </select>
+            <div style={s.derivedNote}>
+              A terminal has one port, so the connector end says which cavity
+              receives it. Until a cavity is chosen the two stay on separate nets.
+            </div>
+          </>
+        )}
+
+        {isConnectorToConnector && (
+          <>
+            <div style={s.sectionLabel}>Cavity pairing</div>
+            <div style={s.derivedNote}>
+              {cavityMap.length === 0
+                ? 'Positional (nth cavity to nth cavity) — the default, not an assertion. Add pairs below to override; any cavity you don\u2019t name stays unpaired.'
+                : `Explicit map — overrides positional entirely. ${cavityMap.length} pair${cavityMap.length === 1 ? '' : 's'} named; every other cavity is unpaired.`}
+            </div>
+            {cavityMap.map((pair, i) => (
+              <div key={i} style={s.subRow}>
+                <select
+                  style={{ ...s.input, flex: 1 }}
+                  value={pair.sourceCavityId}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    store.transact('Edit mate cavity pair', (draft) => {
+                      updateMateCavityPairInDraft(draft, mate.id, i, { sourceCavityId: value });
+                    });
+                  }}
+                >
+                  {sourceCavities.map((cav) => (
+                    <option key={cav.id} value={cav.id}>{source?.refdes}:{cav.designation}</option>
+                  ))}
+                </select>
+                <span style={{ color: theme.color.textFaint }}>↔</span>
+                <select
+                  style={{ ...s.input, flex: 1 }}
+                  value={pair.targetCavityId}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    store.transact('Edit mate cavity pair', (draft) => {
+                      updateMateCavityPairInDraft(draft, mate.id, i, { targetCavityId: value });
+                    });
+                  }}
+                >
+                  {targetCavities.map((cav) => (
+                    <option key={cav.id} value={cav.id}>{target?.refdes}:{cav.designation}</option>
+                  ))}
+                </select>
+                <button
+                  style={s.removeChip} title="Remove this pair"
+                  onClick={() => {
+                    store.transact('Remove mate cavity pair', (draft) => {
+                      removeMateCavityPairInDraft(draft, mate.id, i);
+                    });
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              style={s.addRowBtn}
+              disabled={sourceCavities.length === 0 || targetCavities.length === 0}
+              onClick={() => {
+                // Default the new pair to the first not-yet-used cavity on each
+                // side, purely as a starting point the dropdowns can change —
+                // this is a UI convenience, never an inferred pairing (D3).
+                const usedSource = new Set(cavityMap.map((p) => p.sourceCavityId));
+                const usedTarget = new Set(cavityMap.map((p) => p.targetCavityId));
+                const sc = sourceCavities.find((c) => !usedSource.has(c.id)) ?? sourceCavities[0];
+                const tc = targetCavities.find((c) => !usedTarget.has(c.id)) ?? targetCavities[0];
+                if (!sc || !tc) return;
+                store.transact('Add mate cavity pair', (draft) => {
+                  addMateCavityPairInDraft(draft, mate.id, sc.id, tc.id);
+                });
+              }}
+            >
+              + Add cavity pair
+            </button>
+            {cavityMap.length > 0 && (
+              <button
+                style={s.addRowBtn}
+                onClick={() => {
+                  store.transact('Clear mate cavity map', (draft) => {
+                    clearMateCavityMapInDraft(draft, mate.id);
+                  });
+                }}
+              >
+                Clear map (back to positional)
+              </button>
+            )}
+          </>
+        )}
+
+        {!isTerminalIntoConnector && !isConnectorToConnector && (
+          <div style={s.derivedNote}>
+            {source?.type} ↔ {target?.type}: no cavity pairing applies to this mate.
+          </div>
+        )}
+
+        <button style={s.deleteBtn} onClick={onDelete}>Delete mate</button>
+      </div>
+    </div>
+  );
+}
+
 /** Generic right-click context menu, wired to component nodes, wires,
  * groups, and notes (spec request: "each component has a drop down menu
  * when it is right clicked so we can add new features as we go forward";
@@ -3029,7 +3420,7 @@ function GroupInspector({
  * this menu, and its "Edit" item specifically, is the only way to open the
  * full property card. Item set stays small and real per target kind. */
 function ContextMenu({
-  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup, onAutoRoute,
+  state, store, onClose, onEdit, onDuplicate, onDelete, onUngroupWire, onUngroup, onAutoRoute, onStartMate,
 }: {
   state: ContextMenuState;
   store: HarnessStore;
@@ -3040,6 +3431,7 @@ function ContextMenu({
   onUngroupWire: (groupId: string, wireId: string) => void;
   onUngroup: (groupId: string) => void;
   onAutoRoute: (wireId: string) => void;
+  onStartMate: (componentId: string) => void;
 }) {
   const items: { label: string; onClick: () => void; danger?: boolean }[] = [];
   items.push({ label: 'Edit', onClick: () => { onEdit(); onClose(); } });
@@ -3058,6 +3450,12 @@ function ContextMenu({
         },
       });
     }
+    // Mates join connectors/terminals (see Mate in core/types.ts) — the other
+    // component types have nothing to mate with, so the entry only appears
+    // where it can do something.
+    if (component && (component.type === 'connector' || component.type === 'terminal')) {
+      items.push({ label: 'Create mate', onClick: () => { onStartMate(state.target.id); onClose(); } });
+    }
     items.push({ label: 'Delete', danger: true, onClick: () => { onDelete(); onClose(); } });
   } else if (state.target.kind === 'wire') {
     const wire = store.doc.wires[state.target.id];
@@ -3070,6 +3468,8 @@ function ContextMenu({
     items.push({ label: 'Delete wire', danger: true, onClick: () => { onDelete(); onClose(); } });
   } else if (state.target.kind === 'group') {
     items.push({ label: 'Ungroup', onClick: () => { onUngroup(state.target.id); onClose(); } });
+  } else if (state.target.kind === 'mate') {
+    items.push({ label: 'Delete mate', danger: true, onClick: () => { onDelete(); onClose(); } });
   } else {
     items.push({ label: 'Delete note', danger: true, onClick: () => { onDelete(); onClose(); } });
   }
@@ -3267,6 +3667,13 @@ const s = {
     padding: '6px 11px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control,
     background: theme.color.surface, color: theme.color.textStrong, cursor: 'pointer', fontSize: 12.5, fontWeight: 500,
   },
+  /** Fit-view buttons read like addBtn but carry their own disabled state —
+   * "Fit selection" is inert until something is selected. */
+  viewBtn: (enabled: boolean) => ({
+    padding: '6px 11px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control,
+    background: theme.color.surface, color: theme.color.textStrong, fontSize: 12.5, fontWeight: 500,
+    cursor: enabled ? 'pointer' : 'default', opacity: enabled ? 1 : 0.45,
+  }),
   wireHint: { color: theme.color.accent, fontSize: 12, marginLeft: 8, fontWeight: 500 },
   canvasScroll: { flex: 1, overflow: 'auto', cursor: 'grab' },
   canvasSvg: { display: 'block' },

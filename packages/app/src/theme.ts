@@ -40,6 +40,10 @@ export const theme = {
     info: 'var(--oh-info)',
     infoSoft: 'var(--oh-infoSoft)',
 
+    // Mates (T02) — a mating relationship, never a conductor, so its own hue.
+    mate: 'var(--oh-mate)',
+    mateSoft: 'var(--oh-mateSoft)',
+
     // Canvas
     nodeFill: 'var(--oh-nodeFill)',
     nodeBorder: 'var(--oh-nodeBorder)',

@@ -23,6 +23,10 @@
   --oh-warningSoft: #fdf3e2;
   --oh-info: #1c5fc9;
   --oh-infoSoft: #eaf2ff;
+  /* Mates (T02): a mating relationship is not a conductor, so it gets its own
+     hue distinct from every wire colour and from the selection accent. */
+  --oh-mate: #8a4fd0;
+  --oh-mateSoft: #f1e9fb;
 
   --oh-nodeFill: #ffffff;
   --oh-nodeBorder: #c9cdd4;
@@ -56,6 +60,8 @@
   --oh-warningSoft: #3a2e14;
   --oh-info: #6fa4ff;
   --oh-infoSoft: #1b2a45;
+  --oh-mate: #b98ae8;
+  --oh-mateSoft: #2c2140;
 
   --oh-nodeFill: #20242c;
   --oh-nodeBorder: #3d424c;

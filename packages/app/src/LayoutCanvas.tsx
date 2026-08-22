@@ -94,11 +94,13 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
 import { newInstanceId, computeDerivedModel, endpointComponentId } from '@openharness/core';
+import { pointRect } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
 import { useCanvasPan } from './canvasPan.js';
 import { useCanvasZoom } from './useCanvasZoom.js';
+import { layoutContentRects, layoutBundleRects } from './layoutBounds.js';
 import { SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
 
 const PX_PER_MM = 4;
@@ -645,7 +647,7 @@ export function LayoutCanvas({
   // shared hook, never in the document. useCanvasPan owns the single wheel
   // listener and classifies each event (B3); zoom events land in the hook's
   // onWheelZoom, pan events scroll the container there.
-  const { panX, panY, scale, setContentSize, onWheelZoom } = useCanvasZoom(scrollRef);
+  const { panX, panY, scale, setContentSize, onWheelZoom, fitTo } = useCanvasZoom(scrollRef);
   const { onBackgroundMouseDown } = useCanvasPan(scrollRef, onWheelZoom);
 
   const doc = store.doc;
@@ -956,6 +958,60 @@ export function LayoutCanvas({
     setContentSize(maxX, maxY);
   }, [maxX, maxY, setContentSize]);
 
+  // Fit-to-view / fit-to-selection (review B4). Fit-to-view bounds the drawn
+  // geometry — placed component centers plus the routing nodes of bundles
+  // that are actually drawn (both endpoints placed) — not the whole canvas
+  // rect, so an empty corner of a large canvas doesn't shrink the harness
+  // into a corner of the fit.
+  const fitToView = useCallback(() => {
+    const centers = placed.flatMap((c) => {
+      if (!c.layoutPosition) return [];
+      // An inline pass-through's layoutPosition is vestigial while it rides
+      // its merged line (see findInlinePassThroughs); its drawn position is
+      // on the skeleton, which the bundle waypoints + neighbour centers
+      // below already bound, so the stale coordinate must not stretch the
+      // fit.
+      if (inlinePassThroughs.has(c.id)) return [];
+      return [toPx(c.layoutPosition)];
+    });
+    const waypoints: Point[] = [];
+    for (const b of Object.values(doc.bundles)) {
+      const a = doc.components[b.sourceId];
+      const t = doc.components[b.targetId];
+      if (!a?.layoutPosition || !t?.layoutPosition) continue; // not drawn
+      for (const wp of b.waypoints ?? []) waypoints.push(toPx(wp));
+    }
+    fitTo(layoutContentRects(centers, waypoints));
+  }, [placed, doc, inlinePassThroughs, fitTo]);
+
+  const fitToSelection = useCallback(() => {
+    if (!selected) return;
+    if (selected.kind === 'component') {
+      const c = doc.components[selected.id];
+      if (!c) return;
+      const pair = inlinePassThroughs.get(c.id);
+      if (pair) {
+        // An inline pass-through's stored layoutPosition is vestigial while
+        // it rides its merged line (see findInlinePassThroughs) — fit where
+        // it is actually drawn, not where the stale coordinate says.
+        const skeleton = skeletonPointsFor(pair, doc, nodeGlyphs);
+        if (skeleton.length < 2) return;
+        fitTo([pointRect(pointAtFraction(skeleton, getInlineT(c)).point)]);
+        return;
+      }
+      if (!c.layoutPosition) return;
+      // A single placed component is point-like — fitToBounds gives it the
+      // default 100% zoom and centers it rather than dividing by zero.
+      fitTo([pointRect(toPx(c.layoutPosition))]);
+      return;
+    }
+    const b = doc.bundles[selected.id];
+    const a = b && doc.components[b.sourceId];
+    const t = b && doc.components[b.targetId];
+    if (!b || !a?.layoutPosition || !t?.layoutPosition) return;
+    fitTo(layoutBundleRects(toPx(a.layoutPosition), toPx(t.layoutPosition), (b.waypoints ?? []).map(toPx)));
+  }, [selected, doc, inlinePassThroughs, nodeGlyphs, fitTo]);
+
   // Inline pass-through components don't have their own position card — see
   // findInlinePassThroughs' doc comment; their `layoutPosition` field is
   // vestigial while eligible, and "Remove from layout" wouldn't remove
@@ -969,6 +1025,18 @@ export function LayoutCanvas({
       <div style={s.toolbar}>
         <span style={s.toolbarLabel}>Layout</span>
         <button style={s.toolbarBtn} onClick={addBranchPoint}>+ Branch point</button>
+        {/* Fit-to-view / fit-to-selection (review B4) — view-only, so plain
+            toolbar buttons rather than document mutations. */}
+        <button style={s.toolbarBtn} onClick={fitToView} title="Zoom and pan so the whole layout is visible">
+          Fit view
+        </button>
+        <button
+          style={{ ...s.toolbarBtn, ...(selected === null ? s.toolbarBtnDisabled : {}) }}
+          onClick={fitToSelection} disabled={selected === null}
+          title={selected ? 'Zoom and pan so the selection is visible' : 'Select a component or bundle first'}
+        >
+          Fit selection
+        </button>
         {unplaced.length > 0 && (
           <div style={s.unplacedGroup}>
             <span style={s.unplacedLabel}>Unplaced ({unplaced.length}):</span>
@@ -1421,6 +1489,9 @@ const s = {
   toolbar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexWrap: 'wrap' },
   toolbarLabel: { fontSize: 11, fontWeight: 600, color: theme.color.textFaint, textTransform: 'uppercase', letterSpacing: 0.4, marginRight: 4 },
   toolbarBtn: { padding: '6px 11px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, background: theme.color.surface, color: theme.color.textStrong, cursor: 'pointer', fontSize: 12.5, fontWeight: 500 },
+  /** Spread over toolbarBtn for the inert state — "Fit selection" is inert
+   * until something is selected. */
+  toolbarBtnDisabled: { cursor: 'default', opacity: 0.45 },
   unplacedGroup: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   unplacedLabel: { fontSize: 11.5, color: theme.color.textFaint, fontWeight: 500 },
   unplacedChip: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', border: `1px dashed ${theme.color.border}`, borderRadius: 999, background: 'transparent', color: theme.color.textMuted, cursor: 'pointer', fontSize: 11.5 },

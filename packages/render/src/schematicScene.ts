@@ -105,11 +105,43 @@ export interface SceneNote {
   text: string;
 }
 
+/**
+ * A mate drawn on the schematic (T02). A mate is NOT a conductor — no wire,
+ * no length, no BOM line (see Mate in core/types.ts) — so it gets its own
+ * scene shape instead of reusing SceneWire: it joins the *centers* of the two
+ * component boxes rather than two wirable ports, and there is nothing to
+ * route. The canvas draws it dashed and distinctly coloured so it reads as a
+ * mating relationship, never as a trace.
+ */
+export interface SceneMate {
+  mateId: string;
+  sourceId: string;
+  targetId: string;
+  /** Refdes of each end, carried on the scene (same reason SceneWire carries
+   * refdes) so a drawing surface can label the mate without re-resolving the
+   * document — the GUI tooltip today, PDF export later. */
+  sourceRefdes: string;
+  targetRefdes: string;
+  /** Centre of the source component's box. */
+  from: Point;
+  /** Centre of the target component's box. */
+  to: Point;
+  /** Midpoint of the segment — anchors the on-canvas label and the inspector. */
+  midpoint: Point;
+  /** True when the mate carries a non-empty explicit cavityMap, which
+   * overrides positional pairing entirely (DOMAIN-DECISIONS D3). Mirrors the
+   * exact condition net extraction uses (`cavityMap && length > 0`) so the
+   * drawing can never advertise a different pairing mode than the one the
+   * derived model actually applies. */
+  mapped: boolean;
+}
+
 export interface SchematicScene {
   nodes: SceneNode[];
   wires: SceneWire[];
   notes: SceneNote[];
   shieldNodes: SceneShieldNode[];
+  mates: SceneMate[];
 }
 
 export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
@@ -197,7 +229,51 @@ export function computeSchematicScene(doc: HarnessDocument): SchematicScene {
     text: note.text,
   }));
 
-  return { nodes, wires, notes, shieldNodes };
+  const mates = buildMates(doc, nodes);
+
+  return { nodes, wires, notes, shieldNodes, mates };
+}
+
+/**
+ * Mate geometry (T02 §"What is missing" item 3): one segment per mate,
+ * centre-to-centre between the two mated components.
+ *
+ * Mates whose components no longer exist — or are not placed on this canvas —
+ * are skipped rather than drawn degraded. Net extraction and the mate rules
+ * ignore such mates too ("a mate naming a component that no longer exists is
+ * ignored, not thrown on"), so the drawing agrees with the derived model
+ * instead of advertising a join that isn't happening. An unplaced component
+ * has no box to join; its mate reappears the moment both ends are placed.
+ */
+function buildMates(doc: HarnessDocument, nodes: SceneNode[]): SceneMate[] {
+  const nodeById = new Map(nodes.map((n) => [n.componentId, n]));
+  const out: SceneMate[] = [];
+  for (const mate of Object.values(doc.mates ?? {})) {
+    const source = doc.components[mate.sourceId];
+    const target = doc.components[mate.targetId];
+    if (!source || !target) continue;
+    const sourceNode = nodeById.get(mate.sourceId);
+    const targetNode = nodeById.get(mate.targetId);
+    if (!sourceNode || !targetNode) continue;
+    const from = nodeCenter(sourceNode);
+    const to = nodeCenter(targetNode);
+    out.push({
+      mateId: mate.id,
+      sourceId: mate.sourceId,
+      targetId: mate.targetId,
+      sourceRefdes: source.refdes,
+      targetRefdes: target.refdes,
+      from,
+      to,
+      midpoint: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+      mapped: !!mate.cavityMap && mate.cavityMap.length > 0,
+    });
+  }
+  return out;
+}
+
+function nodeCenter(node: SceneNode): Point {
+  return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
 }
 
 function buildShieldNodes(doc: HarnessDocument, memberScene: Map<string, SceneWire>): SceneShieldNode[] {

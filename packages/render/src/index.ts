@@ -11,3 +11,4 @@ export * from './schematicScene.js';
 export * from './routing.js';
 export * from './overlays.js';
 export * from './zoomGeometry.js';
+export * from './sceneBounds.js';

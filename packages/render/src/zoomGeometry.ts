@@ -95,6 +95,35 @@ export function clientPointToCanvas(
 }
 
 /**
+ * Whether pointer travel of (`dxCanvas`, `dyCanvas`) canvas units is a drag
+ * rather than a click, at zoom `scale`.
+ *
+ * The threshold is a screen-pixel budget: it exists to absorb hand jitter
+ * between mousedown and mouseup, and the pointing device reports that jitter
+ * in screen pixels, so the gesture must feel the same size at every zoom.
+ * Pointer positions arrive as canvas units (see `clientPointToCanvas`), so
+ * the deltas have to be scaled back to screen pixels before the comparison.
+ * Comparing canvas units against the budget directly is review concern C9:
+ * at 25% zoom one px of jitter is four canvas units and crossed a threshold
+ * of three, inserting a spurious bend on a plain click of a wire; at 400%
+ * the same bug demanded twelve screen px of travel before a real drag
+ * registered at all.
+ *
+ * Per-axis comparison — either axis crossing the budget is enough — matching
+ * the canvases' click-vs-drag discrimination. Exactly at the threshold is
+ * NOT a drag (strict >), so `!exceedsDragThreshold(...)` is the matching
+ * click test.
+ */
+export function exceedsDragThreshold(
+  dxCanvas: number,
+  dyCanvas: number,
+  scale: number,
+  thresholdPx: number,
+): boolean {
+  return Math.abs(dxCanvas) * scale > thresholdPx || Math.abs(dyCanvas) * scale > thresholdPx;
+}
+
+/**
  * Fit a set of bounding rectangles into the viewport.
  *
  * Calculates the zoom level and pan offset needed to display all rectangles
@@ -233,6 +262,87 @@ export function nextWheelZoom(currentZoomPercent: number, deltaY: number, deltaM
     : deltaY;
   const exponent = Math.max(-ZOOM_MAX_EVENT_EXPONENT, Math.min(ZOOM_MAX_EVENT_EXPONENT, -deltaPx / 100));
   return clampZoom(currentZoomPercent * Math.pow(ZOOM_NOTCH_FACTOR, exponent));
+}
+
+/** A zero-extent rect at a point. `fitToBounds` recognises point-like input
+ * (width and height both < 1) and centers it at the default 100% zoom rather
+ * than dividing by zero — the packet's named edge case for fitting a single
+ * point-like selection. */
+export function pointRect(p: Point): Rect {
+  return { x: p.x, y: p.y, width: 0, height: 0 };
+}
+
+export interface FitViewResult {
+  /** Zoom percentage, already clamped to the 10–800 contract range. */
+  zoom: number;
+  panX: number;
+  panY: number;
+  scrollLeft: number;
+  scrollTop: number;
+}
+
+/**
+ * Split one axis of a fit offset into the pan/scroll pair the canvases' view
+ * model is built from.
+ *
+ * The frame relation (same one `zoomViewAboutCursor` documents) is
+ *
+ *     clientOffsetFromContainer = canvas·scale + pan − scroll
+ *
+ * while `fitToBounds` solves for a single offset with
+ * `screen = canvas·scale + offset`. Realising that offset therefore needs
+ * `pan − scroll = offset`, and the split is dictated by the invariants:
+ *
+ * - pan ≥ 0 — a negative translate parks content where no scroll position can
+ *   ever reach it (the B8 stranding bug);
+ * - scroll stays inside the container's own range [0, content·scale − viewport].
+ *
+ * A positive offset (the fitted content is smaller than the viewport and gets
+ * centered) can only be produced by pan, so pan absorbs it; a negative one
+ * (content larger than the viewport, or a region away from the origin) is
+ * handed to scroll. When even max scroll can't cover the offset — a selection
+ * near the content's far edge at a scale clamped to 10% — scroll saturates and
+ * the fit lands as close as the container allows.
+ */
+export function splitFitAxis(offset: number, scaledContentSize: number, viewportSize: number): { pan: number; scroll: number } {
+  if (offset >= 0) return { pan: offset, scroll: 0 };
+  const maxScroll = Math.max(0, scaledContentSize - viewportSize);
+  return { pan: 0, scroll: Math.min(-offset, maxScroll) };
+}
+
+/**
+ * Fit a set of canvas-space rects into a scroll+pan+scale canvas view — the
+ * composition of `fitToBounds` (which solves scale and the total offset) with
+ * `splitFitAxis` (which realises that offset in the view's pan and scroll).
+ * This is what fit-to-view and fit-to-selection call (review B4): the canvases
+ * collect the rects for the whole scene or the current selection, and apply
+ * the four numbers to their zoom state and scroll container.
+ *
+ * Empty `rects` resets to the default view (100%, no pan, no scroll) — that
+ * is `fitToBounds`'s own empty-list answer, which is also the only sensible
+ * fit for a canvas with nothing drawn yet.
+ */
+export function fitView(opts: {
+  rects: Rect[];
+  /** Whole-canvas extent, canvas units (the canvases' maxX/maxY) — needed to
+   * bound the scroll split, exactly as for `zoomViewAboutCursor`. */
+  contentWidth: number;
+  contentHeight: number;
+  /** Container client size, screen px. */
+  viewportWidth: number;
+  viewportHeight: number;
+  padding?: number;
+}): FitViewResult {
+  const fit = fitToBounds(opts.rects, opts.viewportWidth, opts.viewportHeight, opts.padding);
+  const x = splitFitAxis(fit.offsetX, opts.contentWidth * fit.scale, opts.viewportWidth);
+  const y = splitFitAxis(fit.offsetY, opts.contentHeight * fit.scale, opts.viewportHeight);
+  return {
+    zoom: fit.scale * 100,
+    panX: x.pan,
+    panY: y.pan,
+    scrollLeft: x.scroll,
+    scrollTop: y.scroll,
+  };
 }
 
 export interface WheelZoomResult {

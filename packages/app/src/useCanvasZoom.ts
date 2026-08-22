@@ -1,9 +1,9 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
-import { nextWheelZoom, zoomViewAboutCursor } from '@openharness/render';
+import { fitView, nextWheelZoom, zoomViewAboutCursor, type Rect } from '@openharness/render';
 
 /**
- * Shared per-pane zoom state and wheel-zoom handler for the Schematic and
- * Layout canvases.
+ * Shared per-pane zoom state, wheel-zoom handler, and fit-to-bounds entry
+ * point for the Schematic and Layout canvases.
  *
  * Why this exists (review C6): the wheel-zoom logic used to be copied
  * verbatim into both canvas components, which is exactly how B2 got fixed in
@@ -51,6 +51,16 @@ export interface CanvasZoom {
   setContentSize: (width: number, height: number) => void;
   /** Handle a wheel event already classified as a zoom event (B3). */
   onWheelZoom: (e: WheelEvent) => void;
+  /**
+   * Fit a set of canvas-space rects into the viewport (review B4): the
+   * fit-to-view / fit-to-selection entry point. The rects come from
+   * `schematicContentRects`/`schematicSelectionRects` (Schematic) or the
+   * layout's placed positions (Layout); the scale+pan+scroll solve is
+   * `fitView` in zoomGeometry. Empty rects reset to the default view.
+   * Like wheel zoom, this is a pure view mutation — no document, no
+   * `store.transact`.
+   */
+  fitTo: (rects: Rect[], padding?: number) => void;
 }
 
 export function useCanvasZoom(scrollRef: React.RefObject<HTMLDivElement>): CanvasZoom {
@@ -123,6 +133,34 @@ export function useCanvasZoom(scrollRef: React.RefObject<HTMLDivElement>): Canva
     [scrollRef],
   );
 
+  const fitTo = useCallback(
+    (rects: Rect[], padding?: number) => {
+      const el = scrollRef.current;
+      // A zero-sized viewport (pane collapsed / window minimised) has no
+      // meaningful fit; skip rather than solve against a degenerate box.
+      if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+      const next = fitView({
+        rects,
+        contentWidth: contentSize.current.width,
+        contentHeight: contentSize.current.height,
+        // clientWidth/Height exclude scrollbars — the true content viewport,
+        // same frame the wheel handler uses.
+        viewportWidth: el.clientWidth,
+        viewportHeight: el.clientHeight,
+        padding,
+      });
+      // Same two-step apply as wheel zoom: the scroll half is written after
+      // commit (pendingScroll), because this commit resizes the inner
+      // content div and a scrollLeft written now would clamp against the old
+      // size.
+      pendingScroll.current = { left: next.scrollLeft, top: next.scrollTop };
+      const nextView = { zoom: next.zoom, panX: next.panX, panY: next.panY };
+      viewRef.current = nextView;
+      setView(nextView);
+    },
+    [scrollRef],
+  );
+
   return {
     zoom: view.zoom,
     panX: view.panX,
@@ -130,5 +168,6 @@ export function useCanvasZoom(scrollRef: React.RefObject<HTMLDivElement>): Canva
     scale: view.zoom / 100,
     setContentSize,
     onWheelZoom,
+    fitTo,
   };
 }

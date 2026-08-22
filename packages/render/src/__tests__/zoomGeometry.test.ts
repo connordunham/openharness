@@ -3,7 +3,11 @@ import {
   screenToCanvas,
   canvasToScreen,
   clientPointToCanvas,
+  exceedsDragThreshold,
   fitToBounds,
+  fitView,
+  splitFitAxis,
+  pointRect,
   clampZoom,
   zoomAboutPoint,
   nextWheelZoom,
@@ -109,6 +113,75 @@ describe('zoomGeometry', () => {
     });
   });
 
+  describe('exceedsDragThreshold', () => {
+    // The canvases' DRAG_THRESHOLD: 3 screen px.
+    const T = 3;
+
+    it('at 100% zoom behaves like the original canvas-unit comparison', () => {
+      // scale 1 keeps the pre-C9 behaviour exactly, so the fix changes
+      // nothing for unzoomed panes.
+      expect(exceedsDragThreshold(2, 0, 1, T)).toBe(false);
+      expect(exceedsDragThreshold(4, 0, 1, T)).toBe(true);
+      expect(exceedsDragThreshold(0, 4, 1, T)).toBe(true);
+      expect(exceedsDragThreshold(2, 2, 1, T)).toBe(false);
+    });
+
+    it('C9: at 25% zoom, one screen px of hand jitter is not a drag', () => {
+      // 1 px of screen jitter is 4 canvas units at scale 0.25. The old
+      // canvas-unit comparison read that as 4 > 3 and inserted a spurious
+      // bend on a plain click of a wire.
+      expect(exceedsDragThreshold(4, 0, 0.25, T)).toBe(false);
+      expect(exceedsDragThreshold(0, 4, 0.25, T)).toBe(false);
+      expect(exceedsDragThreshold(4, 4, 0.25, T)).toBe(false);
+    });
+
+    it('C9: at 400% zoom, a few screen px of real travel is a drag', () => {
+      // 1 canvas unit at scale 4 is 4 screen px. The old comparison needed
+      // 3 canvas units — 12 screen px — before a drag registered at all.
+      expect(exceedsDragThreshold(1, 0, 4, T)).toBe(true);
+      expect(exceedsDragThreshold(0, -1, 4, T)).toBe(true);
+    });
+
+    it('treats the threshold as a screen-pixel budget at every zoom', () => {
+      // The invariant C9 is about: the same physical travel has the same
+      // meaning at any zoom. 2 px of travel is a click everywhere; 4 px of
+      // travel is a drag everywhere.
+      for (const scale of [0.1, 0.25, 0.5, 1, 2, 4, 8]) {
+        const clickDelta = 2 / scale; // canvas units that are 2 px on screen
+        const dragDelta = 4 / scale; // canvas units that are 4 px on screen
+        expect(exceedsDragThreshold(clickDelta, 0, scale, T), `2 px click @ ${scale}x`).toBe(false);
+        expect(exceedsDragThreshold(0, clickDelta, scale, T), `2 px click @ ${scale}x`).toBe(false);
+        expect(exceedsDragThreshold(dragDelta, 0, scale, T), `4 px drag @ ${scale}x`).toBe(true);
+        expect(exceedsDragThreshold(0, dragDelta, scale, T), `4 px drag @ ${scale}x`).toBe(true);
+      }
+    });
+
+    it('exactly at the threshold is still a click (strict comparison)', () => {
+      // Preserves the pre-C9 boundary: travel must EXCEED the budget.
+      expect(exceedsDragThreshold(3, 3, 1, T)).toBe(false);
+      // 12 canvas units at 25% are exactly 3 screen px.
+      expect(exceedsDragThreshold(12, 12, 0.25, T)).toBe(false);
+    });
+
+    it('measures travel magnitude regardless of direction', () => {
+      expect(exceedsDragThreshold(-4, 0, 1, T)).toBe(true);
+      expect(exceedsDragThreshold(0, -4, 1, T)).toBe(true);
+      expect(exceedsDragThreshold(-2, -2, 1, T)).toBe(false);
+    });
+
+    it('makes the lasso click test zoom-independent too', () => {
+      // The marquee side of C9: `!exceedsDragThreshold(w, h, ...)` is the
+      // "never actually opened" test. An 8x8 canvas-unit marquee at 25%
+      // zoom is 2x2 px on screen — jitter, not a selection. The old
+      // canvas-unit test (8 < 3 -> false) ran a selection on it instead of
+      // deselecting.
+      expect(exceedsDragThreshold(8, 8, 0.25, T)).toBe(false);
+      // A genuinely opened marquee stays one at any zoom (4 screen px).
+      expect(exceedsDragThreshold(16, 16, 0.25, T)).toBe(true);
+      expect(exceedsDragThreshold(4, 4, 1, T)).toBe(true);
+    });
+  });
+
   describe('Round-trip conversion', () => {
     it('screenToCanvas then canvasToScreen returns original point', () => {
       const original = { x: 123.456, y: 789.012 };
@@ -192,6 +265,131 @@ describe('zoomGeometry', () => {
       const withPadding = fitToBounds(rects, 1000, 1000, 100);
       // With padding, scale should be smaller (less room available)
       expect(withPadding.scale).toBeLessThanOrEqual(noPadding.scale);
+    });
+  });
+
+  describe('pointRect', () => {
+    it('builds a zero-extent rect at the point', () => {
+      expect(pointRect({ x: 12, y: -7 })).toEqual({ x: 12, y: -7, width: 0, height: 0 });
+    });
+  });
+
+  describe('splitFitAxis', () => {
+    it('realises a positive offset with pan (content smaller than the viewport is centered)', () => {
+      expect(splitFitAxis(120, 800, 1000)).toEqual({ pan: 120, scroll: 0 });
+    });
+
+    it('realises a negative offset with scroll, keeping pan at zero', () => {
+      expect(splitFitAxis(-350, 4000, 1000)).toEqual({ pan: 0, scroll: 350 });
+    });
+
+    it('never emits a negative pan — the B8 stranding invariant', () => {
+      for (const offset of [-10000, -1, 0, 1, 10000]) {
+        expect(splitFitAxis(offset, 5000, 1000).pan).toBeGreaterThanOrEqual(0);
+        expect(splitFitAxis(offset, 5000, 1000).scroll).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it('saturates scroll at the container range when the offset outruns it', () => {
+      // maxScroll = max(0, 4000 - 1000) = 3000; the requested 5000 clamps.
+      expect(splitFitAxis(-5000, 4000, 1000)).toEqual({ pan: 0, scroll: 3000 });
+    });
+
+    it('zero offset needs neither pan nor scroll', () => {
+      expect(splitFitAxis(0, 4000, 1000)).toEqual({ pan: 0, scroll: 0 });
+    });
+  });
+
+  describe('fitView', () => {
+    it('resets to the default view for an empty rect list', () => {
+      expect(
+        fitView({ rects: [], contentWidth: 5000, contentHeight: 4000, viewportWidth: 1000, viewportHeight: 800 }),
+      ).toEqual({ zoom: 100, panX: 0, panY: 0, scrollLeft: 0, scrollTop: 0 });
+    });
+
+    it('fits whole-canvas content smaller than the viewport with pan centering and no scroll', () => {
+      const r = fitView({
+        rects: [{ x: 0, y: 0, width: 2000, height: 1000 }],
+        contentWidth: 2000, contentHeight: 1000,
+        viewportWidth: 1000, viewportHeight: 800,
+        padding: 40,
+      });
+      // scale = min(920/2000, 720/1000) = 0.46
+      expect(r.zoom).toBeCloseTo(46);
+      expect(r.scrollLeft).toBe(0);
+      expect(r.scrollTop).toBe(0);
+      expect(r.panX).toBeCloseTo((1000 - 2000 * 0.46) / 2);
+      expect(r.panY).toBeCloseTo((800 - 1000 * 0.46) / 2);
+    });
+
+    it('fits a region of a larger canvas via scroll, keeping pan at zero', () => {
+      const r = fitView({
+        rects: [{ x: 2000, y: 1000, width: 500, height: 400 }],
+        contentWidth: 5000, contentHeight: 4000,
+        viewportWidth: 1000, viewportHeight: 800,
+        padding: 40,
+      });
+      // scale = min(920/500, 720/400) = 1.8
+      expect(r.zoom).toBeCloseTo(180);
+      expect(r.panX).toBe(0);
+      expect(r.panY).toBe(0);
+      expect(r.scrollLeft).toBeCloseTo(2000 * 1.8 - (1000 - 500 * 1.8) / 2);
+      expect(r.scrollTop).toBeCloseTo(1000 * 1.8 - (800 - 400 * 1.8) / 2);
+    });
+
+    it('centers a point-like rect at the default 100% zoom instead of dividing by zero', () => {
+      const r = fitView({
+        rects: [pointRect({ x: 3000, y: 2000 })],
+        contentWidth: 5000, contentHeight: 4000,
+        viewportWidth: 1000, viewportHeight: 800,
+      });
+      expect(r.zoom).toBe(100);
+      expect(r.panX).toBe(0);
+      expect(r.panY).toBe(0);
+      // The point lands at the viewport center: offset = 500 - 3000.
+      expect(r.scrollLeft).toBeCloseTo(3000 - 500);
+      expect(r.scrollTop).toBeCloseTo(2000 - 400);
+    });
+
+    it('lands the fitted bounds at the viewport center when nothing clamps', () => {
+      const r = fitView({
+        rects: [{ x: 400, y: 300, width: 800, height: 500 }],
+        contentWidth: 4000, contentHeight: 3000,
+        viewportWidth: 1200, viewportHeight: 900,
+        padding: 40,
+      });
+      const scale = r.zoom / 100;
+      // Bounds center in the container frame: canvas*scale + pan - scroll.
+      const cx = (400 + 400) * scale + r.panX - r.scrollLeft;
+      const cy = (300 + 250) * scale + r.panY - r.scrollTop;
+      expect(cx).toBeCloseTo(600);
+      expect(cy).toBeCloseTo(450);
+    });
+
+    it('saturates scroll at the container limit when the fit target outruns it', () => {
+      const r = fitView({
+        rects: [{ x: 9000, y: 0, width: 2000, height: 100 }],
+        contentWidth: 10000, contentHeight: 1000,
+        viewportWidth: 1000, viewportHeight: 800,
+        padding: 40,
+      });
+      // scale = min(920/2000, 720/100) = 0.46; needed scroll 4100 > max 3600.
+      expect(r.zoom).toBeCloseTo(46);
+      expect(r.panX).toBe(0);
+      expect(r.scrollLeft).toBeCloseTo(10000 * 0.46 - 1000);
+    });
+
+    it('keeps the fitted zoom inside the 10-800% contract range', () => {
+      const tiny = fitView({
+        rects: [{ x: 0, y: 0, width: 10, height: 10 }],
+        contentWidth: 10, contentHeight: 10, viewportWidth: 1000, viewportHeight: 800,
+      });
+      expect(tiny.zoom).toBe(800);
+      const huge = fitView({
+        rects: [{ x: 0, y: 0, width: 100000, height: 100000 }],
+        contentWidth: 100000, contentHeight: 100000, viewportWidth: 1000, viewportHeight: 800,
+      });
+      expect(huge.zoom).toBe(10);
     });
   });
 
