@@ -6,7 +6,7 @@
       "model": "openrouter/anthropic/claude-haiku-4.5"
     },
     "implementer": {
-      "model": "openrouter/qwen/qwen3.8-max"
+      "model": "openrouter/google/gemini-3.7-flash"
     },
     "reviewer": {
       "model": "openrouter/moonshotai/kimi-k3"
