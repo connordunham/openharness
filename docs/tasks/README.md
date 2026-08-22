@@ -48,6 +48,7 @@ would otherwise invent its own, differently wrong, version.
 | T14 | Current capacity with bundle derating | L | not started |
 | T15 | Bend radius | M | not started |
 | Phase 2a | Cable bundle routing: bundle visualisation & interaction | L | implemented — bundle outline/label/diameter/conflict rendering, drag-to-move and wire extraction on the Layout canvas (`docs/PHASE2-REFINED-DESIGN.md`); reviewer fixes applied (NUL tie-break separator restored in `joinPath` with a regression test, polyline-vs-spline approximation documented); 68 new tests (464 total), all four gates green; running-app check outstanding |
+| Phase 2b | Cable bundle routing: connector orientation | M | implemented — R rotates a selected connector 90° (Shift+R auto-optimizes: fewest bundle crossings) on the Layout canvas; stored `rotation` is an offset on top of glyph auto-orientation, labelled on the canvas, undoable and persisted; orientation/attach/polyline geometry extracted to `render/layoutOrientation.ts`, optimizer in `render/connectorOptimization.ts`; schematic-scene changes in the brief don't apply (schematic boxes route horizontally — see packet report); reviewer fixes applied (inline pass-through scoring approximation documented honestly at all three claim sites, direct `countPathCrossings` self/pair-crossing/exclusion tests, rotation label gated to connectors); 50 new tests (514 total), all four gates green; running-app check outstanding |
 
 S ≈ half a day, M ≈ a day, L ≈ two to three, XL ≈ a week.
 

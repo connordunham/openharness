@@ -48,13 +48,24 @@
  * is drawn as a small plug glyph — a body with a tapered "nose" at the
  * mating face and a short stub at the back where the bundle cable leaves
  * (see `connectorGlyph`). `layoutPosition` is now interpreted as the node's
- * CENTER (it used to be a box's top-left corner). The glyph's rotation
+ * CENTER (it used to be a box's top-left corner). The glyph's base facing
  * angle is never stored — it's recomputed every render from the average
  * direction to whatever it's bundled to (`nodeAngles`), so two connectors
  * bundled only to each other automatically end up facing opposite ways
  * (each one's back/cable-stub points at the other, i.e. their angles are
  * literally 180° apart) with no manual "flip" step, and dragging a node
- * updates both ends' orientation live. Branch points keep their old plain
+ * updates both ends' orientation live.
+ *
+ * On top of that auto-orientation sits the user-authored rotation (Phase 2b,
+ * docs/PHASE2-REFINED-DESIGN.md §3): select a connector and press R to
+ * rotate it 90° clockwise (Shift+R auto-optimizes — fewest bundle
+ * crossings). The offset persists in the existing Component.rotation field
+ * (unset reads as 0), turns the glyph — which moves every plugged-in
+ * bundle's attach point, so the bundles re-route live — and is labelled on
+ * the canvas. The geometry all this runs on (auto angles, attach points,
+ * bundle polylines) lives in @openharness/render's layoutOrientation.ts so
+ * the optimizer can score candidate rotations without a canvas.
+ * Branch points keep their old plain
  * dot rendering (they're topology, not a physical part with a mating
  * face) and keep using `branchOutlinePoint` — the old `outlinePoint` — for
  * where a bundle line touches them.
@@ -97,7 +108,12 @@ import {
   newInstanceId, computeDerivedModel, endpointComponentId, computeRouteAvoidingBundle,
   DEFAULT_BUNDLE_COLOR,
 } from '@openharness/core';
-import { pointRect, emitBundleGeometry, pointAtFraction, type SceneBundle } from '@openharness/render';
+import {
+  pointRect, emitBundleGeometry, pointAtFraction,
+  bundlePolyline, computeNodeAutoAngles, nodeFacingAngle,
+  branchOutlinePoint, glyphBodyHalfLen, GLYPH_STUB_LEN, normalizeRotationDegrees,
+  type SceneBundle,
+} from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
@@ -106,6 +122,8 @@ import { useCanvasZoom } from './useCanvasZoom.js';
 import { layoutContentRects, layoutBundleRects } from './layoutBounds.js';
 import { SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
 import { useBundleRouting } from './useBundleRouting.js';
+import { useConnectorRotation } from './useConnectorRotation.js';
+import { rotationActionForKey } from './connectorRotation.js';
 
 const PX_PER_MM = 4;
 const BRANCH_R = 7;
@@ -117,12 +135,13 @@ const ENDPOINT_EXCLUSION_PX = 14;
 
 // Generic connector-plug glyph geometry (px, local space before rotation —
 // see connectorGlyph). Small and generic on purpose (Connor: "small
-// generalized connector shapes"), not per-type accurate artwork.
-const BODY_HALF_LEN = 12;
+// generalized connector shapes"), not per-type accurate artwork. Body
+// half-lengths live in render's glyphBodyHalfLen table — ONE spelling shared
+// with the bundle-attach math (layoutOrientation.ts), so what's drawn and
+// what's computed can't drift apart.
 const BODY_HALF_W = 8;
 const NOSE_LEN = 6;
 const NOSE_HALF_W = 5;
-const STUB_LEN = 10;
 /** Hover/selection ring + hit-target radius — generous enough to cover the
  * glyph at any rotation without having to rotate the hit-target itself. */
 const HOVER_R = 24;
@@ -201,18 +220,6 @@ function distToSegmentSq(p: Point, a: Point, b: Point): number {
   return (p.x - projX) ** 2 + (p.y - projY) ** 2;
 }
 
-/** Point on a branch point's little circle where a bundle line to
- * `otherCenter`/`aimAt` should visibly terminate — branch points are pure
- * layout topology (spec §4.2), rendered as plain dots, so this is just
- * circle-edge math (no orientation to account for, unlike connectorGlyph). */
-function branchOutlinePoint(center: Point, aimAt: Point): Point {
-  const dx = aimAt.x - center.x;
-  const dy = aimAt.y - center.y;
-  const len = Math.hypot(dx, dy);
-  if (len === 0) return center;
-  return { x: center.x + (dx / len) * BRANCH_R, y: center.y + (dy / len) * BRANCH_R };
-}
-
 /** A small decoration drawn on top of a glyph's body/nose — e.g. a splice's
  * junction dot, a diode's cathode band, a terminal's ring. Kept generic
  * (rather than one field per possible decoration) so the render loop can
@@ -253,7 +260,7 @@ function glyphRotator(center: Point, angle: number): (lx: number, ly: number) =>
  * off the same points stay simple to reason about. */
 function connectorGlyph(center: Point, angle: number): ConnectorGlyph {
   const abs = glyphRotator(center, angle);
-  const hl = BODY_HALF_LEN;
+  const hl = glyphBodyHalfLen('connector');
   const hw = BODY_HALF_W;
   const bFT = abs(-hl, -hw);
   const bFB = abs(-hl, hw);
@@ -262,7 +269,7 @@ function connectorGlyph(center: Point, angle: number): ConnectorGlyph {
   const nT1 = abs(-hl - NOSE_LEN, -NOSE_HALF_W);
   const nT2 = abs(-hl - NOSE_LEN, NOSE_HALF_W);
   const stubStart = abs(hl, 0);
-  const stubEnd = abs(hl + STUB_LEN, 0);
+  const stubEnd = abs(hl + GLYPH_STUB_LEN, 0);
   return {
     bodyPoly: [bFT, bBT, bBB, bFB].map((p) => `${p.x},${p.y}`).join(' '),
     nosePoly: [bFT, nT1, nT2, bFB].map((p) => `${p.x},${p.y}`).join(' '),
@@ -278,7 +285,7 @@ function connectorGlyph(center: Point, angle: number): ConnectorGlyph {
  * with anything. */
 function cableGlyph(center: Point, angle: number): ConnectorGlyph {
   const abs = glyphRotator(center, angle);
-  const hl = 11;
+  const hl = glyphBodyHalfLen('cable');
   const hw = 6.5;
   const c = 3.5;
   const pts = [
@@ -286,7 +293,7 @@ function cableGlyph(center: Point, angle: number): ConnectorGlyph {
     abs(hl - c, hw), abs(-hl + c, hw), abs(-hl, hw - c), abs(-hl, -hw + c),
   ];
   const stubStart = abs(hl, 0);
-  const stubEnd = abs(hl + STUB_LEN, 0);
+  const stubEnd = abs(hl + GLYPH_STUB_LEN, 0);
   return { bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '), nosePoly: '', stubStart, stubEnd, decorations: [] };
 }
 
@@ -298,11 +305,11 @@ function cableGlyph(center: Point, angle: number): ConnectorGlyph {
  * original connector-only glyph already made). */
 function spliceGlyph(center: Point, angle: number): ConnectorGlyph {
   const abs = glyphRotator(center, angle);
-  const hl = 8;
+  const hl = glyphBodyHalfLen('splice');
   const hw = 3;
   const pts = [abs(-hl, -hw), abs(hl, -hw), abs(hl, hw), abs(-hl, hw)];
   const stubStart = abs(hl, 0);
-  const stubEnd = abs(hl + STUB_LEN, 0);
+  const stubEnd = abs(hl + GLYPH_STUB_LEN, 0);
   return {
     bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '),
     nosePoly: '',
@@ -319,13 +326,13 @@ function spliceGlyph(center: Point, angle: number): ConnectorGlyph {
 function terminalGlyph(center: Point, angle: number, flipped: boolean): ConnectorGlyph {
   const facing = flipped ? angle + Math.PI : angle;
   const abs = glyphRotator(center, facing);
-  const hl = 7;
+  const hl = glyphBodyHalfLen('terminal');
   const ringR = 5.5;
   const ringCenter = abs(-hl, 0);
   const leadStart = abs(-hl + ringR, 0);
   const leadEnd = abs(hl, 0);
   const stubStart = abs(hl, 0);
-  const stubEnd = abs(hl + STUB_LEN, 0);
+  const stubEnd = abs(hl + GLYPH_STUB_LEN, 0);
   return {
     bodyPoly: '',
     nosePoly: '',
@@ -344,7 +351,7 @@ function terminalGlyph(center: Point, angle: number, flipped: boolean): Connecto
  * generic's plain square at a glance. */
 function resistorGlyph(center: Point, angle: number): ConnectorGlyph {
   const abs = glyphRotator(center, angle);
-  const hl = 10;
+  const hl = glyphBodyHalfLen('resistor');
   const hw = 4;
   const pts = [abs(-hl, -hw), abs(hl, -hw), abs(hl, hw), abs(-hl, hw)];
   const band = (bx: number): GlyphDecoration => {
@@ -353,7 +360,7 @@ function resistorGlyph(center: Point, angle: number): ConnectorGlyph {
     return { kind: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y };
   };
   const stubStart = abs(hl, 0);
-  const stubEnd = abs(hl + STUB_LEN, 0);
+  const stubEnd = abs(hl + GLYPH_STUB_LEN, 0);
   return {
     bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '),
     nosePoly: '',
@@ -370,14 +377,14 @@ function resistorGlyph(center: Point, angle: number): ConnectorGlyph {
  * physically here too, same tie-in as the schematic diodeSymbol. */
 function diodeGlyph(center: Point, angle: number, reverse: boolean): ConnectorGlyph {
   const abs = glyphRotator(center, angle);
-  const hl = 10;
+  const hl = glyphBodyHalfLen('diode');
   const hw = 4;
   const pts = [abs(-hl, -hw), abs(hl, -hw), abs(hl, hw), abs(-hl, hw)];
   const bandX = reverse ? hl - 2.5 : -hl + 2.5;
   const a = abs(bandX, -hw);
   const b = abs(bandX, hw);
   const stubStart = abs(hl, 0);
-  const stubEnd = abs(hl + STUB_LEN, 0);
+  const stubEnd = abs(hl + GLYPH_STUB_LEN, 0);
   return {
     bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '),
     nosePoly: '',
@@ -391,10 +398,10 @@ function diodeGlyph(center: Point, angle: number, reverse: boolean): ConnectorGl
  * shape known" fallback as the generic ComponentIcon, just at node scale. */
 function genericGlyph(center: Point, angle: number): ConnectorGlyph {
   const abs = glyphRotator(center, angle);
-  const half = 7;
+  const half = glyphBodyHalfLen('generic');
   const pts = [abs(-half, -half), abs(half, -half), abs(half, half), abs(-half, half)];
   const stubStart = abs(half, 0);
-  const stubEnd = abs(half + STUB_LEN, 0);
+  const stubEnd = abs(half + GLYPH_STUB_LEN, 0);
   return { bodyPoly: pts.map((p) => `${p.x},${p.y}`).join(' '), nosePoly: '', stubStart, stubEnd, decorations: [] };
 }
 
@@ -552,8 +559,8 @@ function skeletonPointsFor(pair: InlinePassThrough, doc: HarnessStore['doc'], no
   const wB = pair.bundleB.sourceId === pair.component.id ? wBRaw : [...wBRaw].reverse(); // now R -> otherB order
   const xAimAt = wA[0] ?? wB[0] ?? yCenter;
   const yAimAt = wB[wB.length - 1] ?? wA[wA.length - 1] ?? xCenter;
-  const xAttach = xComp.type === 'branchPoint' ? branchOutlinePoint(xCenter, xAimAt) : (nodeGlyphs.get(xComp.id)?.stubEnd ?? xCenter);
-  const yAttach = yComp.type === 'branchPoint' ? branchOutlinePoint(yCenter, yAimAt) : (nodeGlyphs.get(yComp.id)?.stubEnd ?? yCenter);
+  const xAttach = xComp.type === 'branchPoint' ? branchOutlinePoint(xCenter, xAimAt, BRANCH_R) : (nodeGlyphs.get(xComp.id)?.stubEnd ?? xCenter);
+  const yAttach = yComp.type === 'branchPoint' ? branchOutlinePoint(yCenter, yAimAt, BRANCH_R) : (nodeGlyphs.get(yComp.id)?.stubEnd ?? yCenter);
   return [xAttach, ...wA, ...wB, yAttach];
 }
 
@@ -639,6 +646,14 @@ export function LayoutCanvas({
   // bundle. All gesture math/document writes live in useBundleRouting — the
   // canvas only feeds pointer events and renders the resulting state.
   const bundleRouting = useBundleRouting(store, scale, PX_PER_MM);
+  /** Brief confirmation ring after an auto-optimize (Phase 2b visual
+   * feedback) — the id of the connector to highlight, cleared by a timer. */
+  const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!flashId) return;
+    const t = setTimeout(() => setFlashId(null), 700);
+    return () => clearTimeout(t);
+  }, [flashId]);
   /** Click info stashed between mousedown and mouseup on a bundle's line:
    * the click-vs-drag decision happens at release (drag threshold — C9), and
    * a plain click still inserts a routing node exactly as before this
@@ -650,6 +665,13 @@ export function LayoutCanvas({
 
   const doc = store.doc;
   const derived = computeDerivedModel(doc);
+  // Phase 2b connector orientation: R rotates the selected connector 90°,
+  // Shift+R auto-optimizes its stored rotation (fewest bundle crossings).
+  // Fed the canvas's own scale/exclusion/branch constants so the optimizer
+  // applies the same definition of a crossing as this canvas's conflict
+  // indicator (inline pass-throughs remain an accepted approximation — see
+  // countWireCrossings in render/connectorOptimization.ts).
+  const connectorRotation = useConnectorRotation(doc, store, PX_PER_MM, ENDPOINT_EXCLUSION_PX, BRANCH_R);
 
   /** True mm-space position of a mousedown/click, using the SVG's own
    * bounding rect — needed (unlike the simple delta-drags elsewhere in this
@@ -704,39 +726,25 @@ export function LayoutCanvas({
   const placed = Object.values(doc.components).filter((c) => !!c.layoutPosition);
   const unplaced = Object.values(doc.components).filter((c) => !c.layoutPosition && c.type !== 'branchPoint');
 
-  // Auto-orientation (see file header): each connector's facing angle is the
-  // average direction, in px space, from its own center to whatever it's
-  // bundled to (aimed at the first/last routing waypoint when one exists, so
-  // a bent bundle still leaves the glyph pointing the right way). Never
-  // stored — recomputed every render, so dragging either end updates both
-  // glyphs' orientation live, and two connectors bundled only to each other
-  // land exactly 180° apart with no manual flip.
+  // Auto-orientation (see file header): each connector's base facing angle
+  // is the average direction, in px space, from its own center to whatever
+  // it's bundled to (aimed at the first/last routing waypoint when one
+  // exists, so a bent bundle still leaves the glyph pointing the right way).
+  // The base angle is never stored — recomputed every render, so dragging
+  // either end updates both glyphs' orientation live, and two connectors
+  // bundled only to each other land exactly 180° apart with no manual flip.
+  // The user-authored rotation (Phase 2b, R key) is stored on the component
+  // and applied ON TOP: final angle = auto + rotation. The math itself lives
+  // in render (layoutOrientation.ts) so the auto-optimize can score it too.
   const nodeAngles = useMemo(() => {
-    const centersPx = new Map<string, Point>();
-    for (const c of placed) if (c.layoutPosition) centersPx.set(c.id, toPx(c.layoutPosition));
+    const auto = computeNodeAutoAngles(doc, PX_PER_MM);
     const angles = new Map<string, number>();
     for (const c of placed) {
       if (c.type === 'branchPoint') continue;
-      const center = centersPx.get(c.id);
-      if (!center) continue;
-      let sx = 0, sy = 0, n = 0;
-      for (const b of Object.values(doc.bundles)) {
-        const isSource = b.sourceId === c.id;
-        const otherId = isSource ? b.targetId : b.targetId === c.id ? b.sourceId : null;
-        if (!otherId) continue;
-        const otherCenter = centersPx.get(otherId);
-        if (!otherCenter) continue;
-        const waypointsPx = (b.waypoints ?? []).map(toPx);
-        const aimAt = (isSource ? waypointsPx[0] : waypointsPx[waypointsPx.length - 1]) ?? otherCenter;
-        const dx = aimAt.x - center.x;
-        const dy = aimAt.y - center.y;
-        const len = Math.hypot(dx, dy);
-        if (len > 0) { sx += dx / len; sy += dy / len; n++; }
-      }
-      angles.set(c.id, n > 0 ? Math.atan2(sy, sx) : 0);
+      angles.set(c.id, nodeFacingAngle(auto.get(c.id) ?? 0, c.rotation));
     }
     return angles;
-  }, [placed, doc.bundles]);
+  }, [doc, placed]);
 
   const nodeGlyphs = useMemo(() => {
     const glyphs = new Map<string, ConnectorGlyph>();
@@ -759,30 +767,23 @@ export function LayoutCanvas({
 
   /** Bundles this render actually draws, with their resolved px polylines —
    * the same attach-point math the render loop always used (glyph stub tip
-   * for ordinary components, circle-edge clip for branch points), lifted out
-   * of the JSX so the bundle scene builder (emitBundleGeometry) and the
-   * render loop share ONE polyline per bundle instead of each recomputing it. */
+   * for ordinary components, circle-edge clip for branch points), shared
+   * with the render package (layoutOrientation.bundlePolyline) so the bundle
+   * scene builder, the rotation optimizer and this render loop all agree on
+   * ONE polyline per bundle. A rotated connector moves its stub tip, so its
+   * bundles' polylines — and any crossings — update the same render. */
   const drawableBundles = useMemo(() => {
     const out: { bundle: Bundle; pathD: string; pointsPx: Point[]; waypointsPx: Point[] }[] = [];
     for (const b of Object.values(doc.bundles)) {
       // Bundles absorbed into a merged inline pass-through line are rendered
       // by that line (see below); drawing them here would double them.
       if (absorbedBundleIds.has(b.id)) continue;
-      const a = doc.components[b.sourceId];
-      const t = doc.components[b.targetId];
-      if (!a?.layoutPosition || !t?.layoutPosition) continue;
-      const pa = toPx(a.layoutPosition);
-      const pt = toPx(t.layoutPosition);
-      const waypointsPx = (b.waypoints ?? []).map(toPx);
-      const aAimAt = waypointsPx[0] ?? { x: pt.x, y: pt.y };
-      const tAimAt = waypointsPx[waypointsPx.length - 1] ?? { x: pa.x, y: pa.y };
-      const from = a.type === 'branchPoint' ? branchOutlinePoint(pa, aAimAt) : (nodeGlyphs.get(a.id)?.stubEnd ?? pa);
-      const to = t.type === 'branchPoint' ? branchOutlinePoint(pt, tAimAt) : (nodeGlyphs.get(t.id)?.stubEnd ?? pt);
-      const pointsPx = [from, ...waypointsPx, to];
-      out.push({ bundle: b, pathD: smoothBundlePath(pointsPx), pointsPx, waypointsPx });
+      const pointsPx = bundlePolyline(doc, b, nodeAngles, PX_PER_MM, BRANCH_R);
+      if (!pointsPx) continue;
+      out.push({ bundle: b, pathD: smoothBundlePath(pointsPx), pointsPx, waypointsPx: (b.waypoints ?? []).map(toPx) });
     }
     return out;
-  }, [doc, absorbedBundleIds, nodeGlyphs]);
+  }, [doc, absorbedBundleIds, nodeAngles]);
 
   // Bundle scene data (Phase 2a): outline width from the DERIVED diameter,
   // membership/gauge labels from the DERIVED contents, crossing detection on
@@ -831,6 +832,41 @@ export function LayoutCanvas({
       setSelected(null);
     },
     [store],
+  );
+
+  /** Connector orientation (Phase 2b): plain R rotates the selected
+   * connector 90° clockwise, Shift+R auto-optimizes it (fewest bundle
+   * crossings). Scoped to THIS pane's canvas container — never a window
+   * listener — so a split view with two Layout panes rotates only the
+   * focused one, and each pane keeps its own selection. The container is
+   * focusable (tabIndex -1) so clicking the canvas or a connector is enough
+   * to receive the key; typing R in an inspector input never rotates
+   * anything (form-field guard in rotationActionForKey). */
+  const onRotationKey = useCallback(
+    (e: React.KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inFormField = !!target
+        && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
+      const action = rotationActionForKey(e, selected, doc, inFormField);
+      // action !== null already implies a connector is selected (that's what
+      // rotationActionForKey decides) — re-check explicitly rather than
+      // asserting, so the narrowing is compiler-checked.
+      if (!action || !selected || selected.kind !== 'component') return;
+      e.preventDefault();
+      const id = selected.id;
+      const refdes = doc.components[id]?.refdes ?? id;
+      if (action === 'optimize') {
+        const applied = connectorRotation.autoOptimizeConnector(id);
+        if (applied === undefined) return;
+        setFlashId(id); // brief highlight — the "success" confirmation
+        setNotice(`${refdes}: auto-optimized to ${applied}°`);
+      } else {
+        const applied = connectorRotation.rotateConnector(id, true);
+        if (applied === undefined) return;
+        setNotice(`${refdes} rotated to ${applied}°`);
+      }
+    },
+    [selected, doc, connectorRotation],
   );
 
   const onNodeMouseDown = useCallback(
@@ -1181,14 +1217,22 @@ export function LayoutCanvas({
         )}
         {pendingBundleFrom && <span style={s.hint}>Click another component to connect a bundle, or click it again to cancel.</span>}
         {notice && <span style={s.hint}>{notice}</span>}
-        {!pendingBundleFrom && !notice && Object.keys(doc.bundles).length > 0 && (
+        {!pendingBundleFrom && !notice && selectedComponent?.type === 'connector' && (
+          <span style={s.hint}>Press R to rotate {selectedComponent.refdes} 90° · Shift+R to auto-optimize (fewest crossings).</span>
+        )}
+        {!pendingBundleFrom && !notice && selectedComponent?.type !== 'connector' && Object.keys(doc.bundles).length > 0 && (
           <span style={s.hintMuted}>Drag a bundle's line to move all its routing nodes, or click it to add one; select a bundle to extract wires. Hover any node to see which wires pass through it.</span>
         )}
       </div>
 
       <div style={s.body}>
         <div
-          ref={scrollRef} style={s.canvasScroll}
+          ref={scrollRef} style={{ ...s.canvasScroll, outline: 'none' }}
+          // Focusable so the pane receives R/Shift+R once the user has
+          // clicked it (a click anywhere inside focuses this container) —
+          // see onRotationKey for why the listener lives here, not on window.
+          tabIndex={-1}
+          onKeyDown={onRotationKey}
           onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
           onMouseDown={onBackgroundMouseDown}
         >
@@ -1419,6 +1463,15 @@ export function LayoutCanvas({
                 const isHovered = hoveredComponentId === c.id;
                 const isBranch = c.type === 'branchPoint';
                 const glyph = isBranch ? undefined : nodeGlyphs.get(c.id);
+                // Phase 2b rotation label: shown while selected (immediate
+                // feedback for R presses — including 0°) and whenever a
+                // non-zero rotation is stored, so a rotated connector stays
+                // visibly rotated after deselection. Connectors only:
+                // rotation is a connector feature (rotateConnector refuses
+                // every other type), and a bare "0°" appearing on any
+                // selected splice/terminal/cable/resistor was just clutter.
+                const rotationDeg = normalizeRotationDegrees(c.rotation ?? 0);
+                const showRotation = c.type === 'connector' && (isSelected || (c.rotation !== undefined && rotationDeg !== 0));
                 // The little connect-handle used to sit at full opacity on
                 // every node all the time — with more than a few parts
                 // placed that read as a field of stray circles. Dim it
@@ -1436,6 +1489,15 @@ export function LayoutCanvas({
                       <circle
                         cx={center.x} cy={center.y} r={isBranch ? BRANCH_R + 5 : HOVER_R}
                         fill="none" stroke={theme.color.warning} strokeWidth={2} strokeDasharray="4 3"
+                        style={{ pointerEvents: 'none' }}
+                      />
+                    )}
+                    {/* Auto-optimize confirmation (Phase 2b): a brief accent
+                        ring on the connector whose rotation was optimized. */}
+                    {flashId === c.id && (
+                      <circle
+                        cx={center.x} cy={center.y} r={HOVER_R + 3}
+                        fill="none" stroke={theme.color.accent} strokeWidth={2.5}
                         style={{ pointerEvents: 'none' }}
                       />
                     )}
@@ -1520,6 +1582,15 @@ export function LayoutCanvas({
                         <text x={center.x} y={center.y + HOVER_R + 8} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={theme.color.textStrong} style={{ pointerEvents: 'none' }}>
                           {c.refdes}
                         </text>
+                        {showRotation && (
+                          <text
+                            x={center.x} y={center.y - HOVER_R - 20} textAnchor="middle" fontSize={10} fontWeight={600}
+                            fill={isSelected ? theme.color.accent : theme.color.textMuted}
+                            style={{ pointerEvents: 'none' }}
+                          >
+                            {`${rotationDeg}°`}
+                          </text>
+                        )}
                       </>
                     )}
                     {isBranch && (
@@ -1552,6 +1623,12 @@ export function LayoutCanvas({
                   <div style={s.cardBody}>
                     <div style={s.kvRow}><span style={s.kvKey}>x (mm)</span><span style={s.kvVal}>{selectedComponent.layoutPosition.x.toFixed(1)}</span></div>
                     <div style={s.kvRow}><span style={s.kvKey}>y (mm)</span><span style={s.kvVal}>{selectedComponent.layoutPosition.y.toFixed(1)}</span></div>
+                    {selectedComponent.type === 'connector' && (
+                      <div style={s.kvRow}>
+                        <span style={s.kvKey}>Rotation</span>
+                        <span style={s.kvVal}>{connectorRotation.getRotation(selectedComponent.id)}°</span>
+                      </div>
+                    )}
                     {shieldedGroupsAt(store, selectedComponent.id).map((g) => (
                       <div key={g.id} style={s.shieldSection}>
                         <div style={s.sectionLabel}>{g.refdes ? `Shield ${g.refdes} termination` : 'Shield termination'}</div>

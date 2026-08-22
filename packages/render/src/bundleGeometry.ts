@@ -43,6 +43,18 @@ export function segmentIntersection(a1: Point, a2: Point, b1: Point, b2: Point):
   return { x: a1.x + t * rX, y: a1.y + t * rY };
 }
 
+/** True when `p` sits within `radius` of either end of `path` — intersections
+ * this close to a path's attach points are component fan-out geometry, not
+ * routing conflicts (see detectPathCrossings). */
+function nearPathEnds(path: PolylinePath, p: Point, radius: number): boolean {
+  if (radius <= 0) return false;
+  const first = path.points[0];
+  const last = path.points[path.points.length - 1];
+  const r2 = radius * radius;
+  const near = (q: Point | undefined) => !!q && (p.x - q.x) ** 2 + (p.y - q.y) ** 2 <= r2;
+  return near(first) || near(last);
+}
+
 /**
  * Crossing detection over a set of drawn polylines — the geometry behind the
  * bundle conflict indicator (design: "red outline if wires cross"). Wires
@@ -66,14 +78,7 @@ export function detectPathCrossings(
     if (!crossings.has(id)) crossings.set(id, []);
     crossings.get(id)!.push(p);
   };
-  const excluded = (path: PolylinePath, p: Point): boolean => {
-    if (endpointExclusionRadius <= 0) return false;
-    const first = path.points[0];
-    const last = path.points[path.points.length - 1];
-    const r2 = endpointExclusionRadius * endpointExclusionRadius;
-    const near = (q: Point | undefined) => !!q && (p.x - q.x) ** 2 + (p.y - q.y) ** 2 <= r2;
-    return near(first) || near(last);
-  };
+  const excluded = (path: PolylinePath, p: Point): boolean => nearPathEnds(path, p, endpointExclusionRadius);
 
   for (let i = 0; i < paths.length; i++) {
     const a = paths[i]!;
@@ -99,6 +104,40 @@ export function detectPathCrossings(
     }
   }
   return crossings;
+}
+
+/**
+ * The number of crossing EVENTS across a set of drawn polylines — each
+ * interior intersection counted once, whether between two paths or a path
+ * with itself. detectPathCrossings reports the same intersections per path
+ * (a pair crossing appears under BOTH paths' lists), which is right for
+ * per-bundle conflict indicators but double-counts for a scalar score; the
+ * connector-orientation optimizer (connectorOptimization.ts) wants the
+ * scalar. Same endpoint-exclusion discipline as detectPathCrossings.
+ */
+export function countPathCrossings(paths: PolylinePath[], endpointExclusionRadius = 0): number {
+  let count = 0;
+  for (let i = 0; i < paths.length; i++) {
+    const a = paths[i]!;
+    for (let j = i + 1; j < paths.length; j++) {
+      const b = paths[j]!;
+      for (let si = 0; si < a.points.length - 1; si++) {
+        for (let sj = 0; sj < b.points.length - 1; sj++) {
+          const hit = segmentIntersection(a.points[si]!, a.points[si + 1]!, b.points[sj]!, b.points[sj + 1]!);
+          if (!hit || nearPathEnds(a, hit, endpointExclusionRadius) || nearPathEnds(b, hit, endpointExclusionRadius)) continue;
+          count++;
+        }
+      }
+    }
+    for (let si = 0; si < a.points.length - 1; si++) {
+      for (let sj = si + 2; sj < a.points.length - 1; sj++) {
+        const hit = segmentIntersection(a.points[si]!, a.points[si + 1]!, a.points[sj]!, a.points[sj + 1]!);
+        if (!hit || nearPathEnds(a, hit, endpointExclusionRadius)) continue;
+        count++;
+      }
+    }
+  }
+  return count;
 }
 
 /** Squared distance from `p` to segment `a`→`b` (any shared coordinate space). */

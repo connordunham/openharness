@@ -14,3 +14,5 @@ export * from './zoomGeometry.js';
 export * from './sceneBounds.js';
 export * from './bundleGeometry.js';
 export * from './bundleScene.js';
+export * from './layoutOrientation.js';
+export * from './connectorOptimization.js';

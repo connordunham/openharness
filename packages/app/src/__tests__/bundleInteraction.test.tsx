@@ -12,7 +12,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   createEmptyDocument, HarnessStore, DEFAULT_BUNDLE_COLOR,
-  type Connector, type Wire, type Bundle, type WirePart, type HarnessDocument,
+  type Connector, type Wire, type Bundle, type WirePart, type HarnessDocument, type Splice,
 } from '@openharness/core';
 import { LayoutCanvas, BundleInspector } from '../LayoutCanvas.js';
 
@@ -107,6 +107,62 @@ describe('LayoutCanvas — bundle visualization (Phase 2a)', () => {
     const d = createEmptyDocument('Test');
     d.components['c1'] = connectorAt('c1', 'C1', 0, 0);
     expect(() => renderCanvas(d)).not.toThrow();
+  });
+});
+
+describe('LayoutCanvas — connector rotation feedback (Phase 2b)', () => {
+  function rotationDoc(rotation?: number): HarnessDocument {
+    const d = createEmptyDocument('Test');
+    d.components['c1'] = { ...connectorAt('c1', 'C1', 40, 40), ...(rotation !== undefined ? { rotation } : {}) };
+    d.components['c2'] = connectorAt('c2', 'C2', 160, 40);
+    d.wires['w1'] = wireBetween('w1', 'W1', 'c1', 'c2');
+    d.bundles['b1'] = { id: 'b1', refdes: 'BND1', sourceId: 'c1', targetId: 'c2', custom: {} } satisfies Bundle;
+    return d;
+  }
+
+  it('labels a stored rotation on the connector', () => {
+    const html = renderCanvas(rotationDoc(90));
+    expect(html).toContain('>90°<');
+  });
+
+  it('an unrotated connector shows no angle label (unset reads as 0, and 0 is not clutter)', () => {
+    const html = renderCanvas(rotationDoc());
+    expect(html).not.toContain('°<');
+  });
+
+  it('a full circle (360°) reads as unrotated again — no label', () => {
+    const html = renderCanvas(rotationDoc(360));
+    expect(html).not.toContain('°<');
+  });
+
+  it('the angle label is connector-only — a stored rotation on another component type draws nothing', () => {
+    // Rotation is a connector feature (rotateConnector refuses every other
+    // type), but a hand-authored document can still carry rotation on e.g. a
+    // splice; the label must not leak onto it. The selected-non-connector
+    // "0°" half of this gate needs a live pointer to exercise (selection is
+    // component state) — that is running-app check territory.
+    const d = rotationDoc(90);
+    d.components['s1'] = {
+      id: 's1', type: 'splice', refdes: 'S1',
+      layoutPosition: { x: 100, y: 120 }, rotation: 270, custom: {},
+    } satisfies Splice;
+    const html = renderCanvas(d);
+    expect(html).toContain('>90°<');     // the connector keeps its label…
+    expect(html).not.toContain('270°');  // …the rotated splice gets none
+  });
+
+  it('rotation turns the glyph — the drawn body polygon differs from the unrotated one', () => {
+    const plain = renderCanvas(rotationDoc());
+    const rotated = renderCanvas(rotationDoc(180));
+    const bodyPoints = (html: string) => html.match(/<polygon points="([^"]+)"/)?.[1];
+    expect(bodyPoints(plain)).toBeTruthy();
+    expect(bodyPoints(rotated)).toBeTruthy();
+    expect(bodyPoints(rotated)).not.toBe(bodyPoints(plain));
+  });
+
+  it('the canvas container is focusable so the pane can receive the R key once clicked', () => {
+    const html = renderCanvas(rotationDoc());
+    expect(html).toContain('tabindex="-1"');
   });
 });
 
