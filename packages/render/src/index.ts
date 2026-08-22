@@ -12,3 +12,5 @@ export * from './routing.js';
 export * from './overlays.js';
 export * from './zoomGeometry.js';
 export * from './sceneBounds.js';
+export * from './bundleGeometry.js';
+export * from './bundleScene.js';

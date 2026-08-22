@@ -8,3 +8,4 @@ export * from './format.js';
 export * from './gauge.js';
 export { computeDerivedModel } from './derive/index.js';
 export { computeWireParasitics, totalComponentParasitics } from './derive/parasitics.js';
+export { computeRouteAvoidingBundle } from './derive/routing.js';

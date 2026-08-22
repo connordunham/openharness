@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeRoutes } from '../derive/routing.js';
+import { computeRoutes, computeRouteAvoidingBundle } from '../derive/routing.js';
 import {
   doc, withEntities, connector, cavity, splice, cable,
   wire, bundle, cavityEndpoint, spliceEndpoint, cableCoreEndpoint,
@@ -83,6 +83,35 @@ describe('computeRoutes', () => {
     });
 
     expect(computeRoutes(d).get('w1')).toEqual({ status: 'exact', segments: ['leg1', 'leg2'] });
+  });
+
+  it('tie-break stays a total order when bundle ids contain spaces', () => {
+    // The tie-break joins the bundle-id sequence with NUL, not a space
+    // (routing.ts joinPath): imported documents can carry space-containing
+    // ids, and a space separator joins ['a b','c'] and ['a','b c'] into the
+    // same key, so the "lexicographically smallest sequence" rule degrades
+    // to whichever path Dijkstra happens to find first. This fixture stages
+    // exactly that collision: both routes cost 200 mm, and the via-mid route
+    // (['a b','c']) is discovered first (its first leg is the cheaper one),
+    // so a space separator keeps it while the NUL separator correctly
+    // replaces it with the smaller ['a','b c'] ("a\0b c" < "a b\0c").
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a')], { layoutPosition: { x: 0, y: 0 } }),
+        connector('c2', 'C2', [cavity('b')], { layoutPosition: { x: 200, y: 0 } }),
+        connector('mid', 'M1', [], { layoutPosition: { x: 100, y: 40 } }),
+        connector('mid2', 'M2', [], { layoutPosition: { x: 100, y: -40 } }),
+      ],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c2', 'b'))],
+      bundles: [
+        bundle('a b', 'B1', 'c1', 'mid', { length: 50 }),
+        bundle('c', 'B2', 'mid', 'c2', { length: 150 }),
+        bundle('a', 'B3', 'c1', 'mid2', { length: 100 }),
+        bundle('b c', 'B4', 'mid2', 'c2', { length: 100 }),
+      ],
+    });
+
+    expect(computeRoutes(d).get('w1')).toEqual({ status: 'exact', segments: ['a', 'b c'] });
   });
 
   it('a cable core never gets a route status — it is "jumper"', () => {
@@ -183,5 +212,90 @@ describe('computeRoutes', () => {
 
     // w3 connects s1 (host resolves to c1, its only *other* neighbour besides w3 itself) to c2.
     expect(computeRoutes(d).get('w3')).toEqual({ status: 'exact', segments: ['b1'] });
+  });
+});
+
+describe('computeRouteAvoidingBundle (wire extraction)', () => {
+  // Extraction re-routes one wire around one bundle. These tests pin the
+  // "is there another way across" oracle that backs it (Phase 2a).
+
+  it('finds an alternate route when a parallel bundle exists', () => {
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a')], { layoutPosition: { x: 0, y: 0 } }),
+        connector('c2', 'C2', [cavity('b')], { layoutPosition: { x: 100, y: 0 } }),
+      ],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c2', 'b'))],
+      bundles: [
+        bundle('b1', 'B1', 'c1', 'c2'),
+        bundle('b2', 'B2', 'c1', 'c2'),
+      ],
+    });
+
+    expect(computeRouteAvoidingBundle(d, 'w1', 'b1')).toEqual(['b2']);
+    expect(computeRouteAvoidingBundle(d, 'w1', 'b2')).toEqual(['b1']);
+  });
+
+  it('finds a multi-hop alternate route around the excluded bundle', () => {
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a')], { layoutPosition: { x: 0, y: 0 } }),
+        connector('c2', 'C2', [cavity('b')], { layoutPosition: { x: 200, y: 0 } }),
+        connector('mid', 'M1', [], { layoutPosition: { x: 100, y: 50 } }),
+      ],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c2', 'b'))],
+      bundles: [
+        bundle('direct', 'B1', 'c1', 'c2'),
+        bundle('leg1', 'B2', 'c1', 'mid'),
+        bundle('leg2', 'B3', 'mid', 'c2'),
+      ],
+    });
+
+    expect(computeRouteAvoidingBundle(d, 'w1', 'direct')).toEqual(['leg1', 'leg2']);
+  });
+
+  it('returns undefined when the excluded bundle is the only way across', () => {
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a')], { layoutPosition: { x: 0, y: 0 } }),
+        connector('c2', 'C2', [cavity('b')], { layoutPosition: { x: 100, y: 0 } }),
+      ],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c2', 'b'))],
+      bundles: [bundle('b1', 'B1', 'c1', 'c2')],
+    });
+
+    expect(computeRouteAvoidingBundle(d, 'w1', 'b1')).toBeUndefined();
+  });
+
+  it('returns undefined for an unknown wire', () => {
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a')], { layoutPosition: { x: 0, y: 0 } }),
+      ],
+    });
+    expect(computeRouteAvoidingBundle(d, 'nope', 'b1')).toBeUndefined();
+  });
+
+  it('returns undefined for a wire whose ends sit on the same component', () => {
+    // Same-host wires have no bundle path at all, so there is nothing to
+    // re-route around anything.
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a'), cavity('b')], { layoutPosition: { x: 0, y: 0 } }),
+      ],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c1', 'b'))],
+    });
+    expect(computeRouteAvoidingBundle(d, 'w1', 'b1')).toBeUndefined();
+  });
+
+  it('returns undefined for a cable-core (jumper) wire', () => {
+    const d = withEntities(doc(), {
+      components: [
+        connector('c1', 'C1', [cavity('a')], { layoutPosition: { x: 0, y: 0 } }),
+        cable('cb1', 'CB1', { cores: [{ id: 'core1', color: 'Red' }] }),
+      ],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cableCoreEndpoint('cb1', 'core1'))],
+    });
+    expect(computeRouteAvoidingBundle(d, 'w1', 'b1')).toBeUndefined();
   });
 });

@@ -47,6 +47,7 @@ would otherwise invent its own, differently wrong, version.
 | T13 | Automation surface | L | not started |
 | T14 | Current capacity with bundle derating | L | not started |
 | T15 | Bend radius | M | not started |
+| Phase 2a | Cable bundle routing: bundle visualisation & interaction | L | implemented — bundle outline/label/diameter/conflict rendering, drag-to-move and wire extraction on the Layout canvas (`docs/PHASE2-REFINED-DESIGN.md`); reviewer fixes applied (NUL tie-break separator restored in `joinPath` with a regression test, polyline-vs-spline approximation documented); 68 new tests (464 total), all four gates green; running-app check outstanding |
 
 S ≈ half a day, M ≈ a day, L ≈ two to three, XL ≈ a week.
 

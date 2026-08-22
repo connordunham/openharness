@@ -93,8 +93,11 @@
 
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
-import { newInstanceId, computeDerivedModel, endpointComponentId } from '@openharness/core';
-import { pointRect } from '@openharness/render';
+import {
+  newInstanceId, computeDerivedModel, endpointComponentId, computeRouteAvoidingBundle,
+  DEFAULT_BUNDLE_COLOR,
+} from '@openharness/core';
+import { pointRect, emitBundleGeometry, pointAtFraction, type SceneBundle } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
 import { nextLayoutGrid } from './layoutGrid.js';
@@ -102,9 +105,15 @@ import { useCanvasPan } from './canvasPan.js';
 import { useCanvasZoom } from './useCanvasZoom.js';
 import { layoutContentRects, layoutBundleRects } from './layoutBounds.js';
 import { SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
+import { useBundleRouting } from './useBundleRouting.js';
 
 const PX_PER_MM = 4;
 const BRANCH_R = 7;
+/** Crossing detection (emitBundleGeometry) ignores intersections this close
+ * to a path's attach points: several bundles leave one component from the
+ * same stub point and fan out, so a "crossing" right at the node is attach
+ * geometry, not a routing conflict. ≈ glyph stub length + branch radius. */
+const ENDPOINT_EXCLUSION_PX = 14;
 
 // Generic connector-plug glyph geometry (px, local space before rotation —
 // see connectorGlyph). Small and generic on purpose (Connor: "small
@@ -559,34 +568,10 @@ function getInlineT(c: Component): number {
   return typeof v === 'number' && v >= 0 && v <= 1 ? v : 0.5;
 }
 
-/** Point + tangent angle at arc-length fraction `t` (0..1) along a polyline. */
-function pointAtFraction(points: Point[], t: number): { point: Point; angle: number } {
-  if (points.length === 0) return { point: { x: 0, y: 0 }, angle: 0 };
-  if (points.length === 1) return { point: points[0]!, angle: 0 };
-  const segLens: number[] = [];
-  let total = 0;
-  for (let i = 0; i < points.length - 1; i++) {
-    const d = Math.hypot(points[i + 1]!.x - points[i]!.x, points[i + 1]!.y - points[i]!.y);
-    segLens.push(d);
-    total += d;
-  }
-  let target = Math.max(0, Math.min(1, t)) * total;
-  for (let i = 0; i < segLens.length; i++) {
-    const len = segLens[i]!;
-    if (target <= len || i === segLens.length - 1) {
-      const frac = len > 0 ? target / len : 0;
-      const a = points[i]!;
-      const b = points[i + 1]!;
-      return { point: { x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac }, angle: Math.atan2(b.y - a.y, b.x - a.x) };
-    }
-    target -= len;
-  }
-  return { point: points[points.length - 1]!, angle: 0 };
-}
-
 /** Arc-length fraction (0..1) of the point on `points` closest to `p` — the
- * inverse of `pointAtFraction`, used while dragging an inline component to
- * turn a raw cursor position back into a stored `inlineT`. */
+ * inverse of `pointAtFraction` (now in @openharness/render), used while
+ * dragging an inline component to turn a raw cursor position back into a
+ * stored `inlineT`. */
 function fractionAtClosestPoint(points: Point[], p: Point): number {
   if (points.length < 2) return 0.5;
   const segLens: number[] = [];
@@ -649,6 +634,19 @@ export function LayoutCanvas({
   // onWheelZoom, pan events scroll the container there.
   const { panX, panY, scale, setContentSize, onWheelZoom, fitTo } = useCanvasZoom(scrollRef);
   const { onBackgroundMouseDown } = useCanvasPan(scrollRef, onWheelZoom);
+  // Phase 2a bundle gestures: drag a bundle's line to move all of its routing
+  // nodes at once; drag a wire's extraction handle to pull it out of the
+  // bundle. All gesture math/document writes live in useBundleRouting — the
+  // canvas only feeds pointer events and renders the resulting state.
+  const bundleRouting = useBundleRouting(store, scale, PX_PER_MM);
+  /** Click info stashed between mousedown and mouseup on a bundle's line:
+   * the click-vs-drag decision happens at release (drag threshold — C9), and
+   * a plain click still inserts a routing node exactly as before this
+   * gesture existed. */
+  const pendingBundleClick = useRef<{ bundleId: string; clickMm: Point; insertAt: number } | null>(null);
+  /** Transient notice (e.g. a blocked wire extraction) shown in the toolbar
+   * until the next interaction. */
+  const [notice, setNotice] = useState<string | null>(null);
 
   const doc = store.doc;
   const derived = computeDerivedModel(doc);
@@ -759,6 +757,44 @@ export function LayoutCanvas({
     return ids;
   }, [inlinePassThroughs]);
 
+  /** Bundles this render actually draws, with their resolved px polylines —
+   * the same attach-point math the render loop always used (glyph stub tip
+   * for ordinary components, circle-edge clip for branch points), lifted out
+   * of the JSX so the bundle scene builder (emitBundleGeometry) and the
+   * render loop share ONE polyline per bundle instead of each recomputing it. */
+  const drawableBundles = useMemo(() => {
+    const out: { bundle: Bundle; pathD: string; pointsPx: Point[]; waypointsPx: Point[] }[] = [];
+    for (const b of Object.values(doc.bundles)) {
+      // Bundles absorbed into a merged inline pass-through line are rendered
+      // by that line (see below); drawing them here would double them.
+      if (absorbedBundleIds.has(b.id)) continue;
+      const a = doc.components[b.sourceId];
+      const t = doc.components[b.targetId];
+      if (!a?.layoutPosition || !t?.layoutPosition) continue;
+      const pa = toPx(a.layoutPosition);
+      const pt = toPx(t.layoutPosition);
+      const waypointsPx = (b.waypoints ?? []).map(toPx);
+      const aAimAt = waypointsPx[0] ?? { x: pt.x, y: pt.y };
+      const tAimAt = waypointsPx[waypointsPx.length - 1] ?? { x: pa.x, y: pa.y };
+      const from = a.type === 'branchPoint' ? branchOutlinePoint(pa, aAimAt) : (nodeGlyphs.get(a.id)?.stubEnd ?? pa);
+      const to = t.type === 'branchPoint' ? branchOutlinePoint(pt, tAimAt) : (nodeGlyphs.get(t.id)?.stubEnd ?? pt);
+      const pointsPx = [from, ...waypointsPx, to];
+      out.push({ bundle: b, pathD: smoothBundlePath(pointsPx), pointsPx, waypointsPx });
+    }
+    return out;
+  }, [doc, absorbedBundleIds, nodeGlyphs]);
+
+  // Bundle scene data (Phase 2a): outline width from the DERIVED diameter,
+  // membership/gauge labels from the DERIVED contents, crossing detection on
+  // the drawn polylines. Recomputed with the document — cheap at pilot scale
+  // and never stale, same discipline as `derived` itself above.
+  const sceneBundles = emitBundleGeometry(
+    doc, derived,
+    drawableBundles.map((d) => ({ bundleId: d.bundle.id, points: d.pointsPx })),
+    PX_PER_MM, ENDPOINT_EXCLUSION_PX,
+  );
+  const sceneBundleById = new Map(sceneBundles.map((sb) => [sb.id, sb]));
+
   const addBranchPoint = useCallback(() => {
     const pos = nextLayoutGrid(store);
     let newId = '';
@@ -800,6 +836,7 @@ export function LayoutCanvas({
   const onNodeMouseDown = useCallback(
     (component: Component, e: React.MouseEvent) => {
       e.stopPropagation();
+      setNotice(null);
       if (pendingBundleFrom) {
         if (pendingBundleFrom === component.id) { setPendingBundleFrom(null); return; }
         store.transact('Add bundle', (draft) => {
@@ -817,8 +854,26 @@ export function LayoutCanvas({
     [pendingBundleFrom, store],
   );
 
+  /** The routing-node insertion transaction shared by the click-on-line
+   * gesture and the legacy straight-bundle drag. */
+  const insertWaypoint = useCallback(
+    (bundleId: string, insertAt: number, atMm: Point) => {
+      store.transact('Add routing node', (draft) => {
+        const bd = draft.bundles[bundleId];
+        if (!bd) return;
+        if (!bd.waypoints) bd.waypoints = [];
+        bd.waypoints.splice(insertAt, 0, atMm);
+      });
+    },
+    [store],
+  );
+
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Bundle drag / wire extraction gets first refusal — when one is live
+      // it consumes the move (and decides for itself whether the pointer has
+      // travelled far enough to count as a drag yet).
+      if (bundleRouting.updateDrag(e.clientX, e.clientY, clientToPx(e.clientX, e.clientY))) return;
       if (dragging) {
         const dxPx = (e.clientX - dragging.pointerStartX) / scale;
         const dyPx = (e.clientY - dragging.pointerStartY) / scale;
@@ -857,14 +912,42 @@ export function LayoutCanvas({
         }
       }
     },
-    [dragging, draggingWaypoint, draggingInline, store, inlinePassThroughs, doc, nodeGlyphs, clientToPx],
+    [dragging, draggingWaypoint, draggingInline, store, inlinePassThroughs, doc, nodeGlyphs, clientToPx, bundleRouting],
   );
-  const onMouseUp = useCallback(() => { setDragging(null); setDraggingWaypoint(null); setDraggingInline(null); }, []);
+  const onMouseUp = useCallback(() => {
+    // Finish any bundle gesture first. A release that never crossed the drag
+    // threshold is a CLICK on the bundle line → insert the routing node we
+    // stashed at press time (the pre-existing behaviour, now gated on the
+    // threshold so a drag can mean "move the whole shape" instead). A wire
+    // extraction releases past the threshold commit; a blocked one explains
+    // itself in the toolbar so the user isn't left guessing.
+    const gesture = bundleRouting.endDrag();
+    if (gesture) {
+      const pending = pendingBundleClick.current;
+      pendingBundleClick.current = null;
+      if (gesture.gesture === 'click' && pending) {
+        insertWaypoint(pending.bundleId, pending.insertAt, pending.clickMm);
+      } else if (gesture.gesture === 'wire-extract-blocked') {
+        const wire = doc.wires[gesture.wireId];
+        const bundle = doc.bundles[gesture.bundleId];
+        setNotice(`${wire?.refdes ?? gesture.wireId} can't be extracted from ${bundle?.refdes ?? gesture.bundleId} — it has no route that avoids the bundle.`);
+      }
+    }
+    setDragging(null); setDraggingWaypoint(null); setDraggingInline(null);
+  }, [bundleRouting, insertWaypoint, doc]);
 
-  /** Grabbing a bundle's own line (not an existing waypoint handle) inserts
-   * a new routing node at the click position, in the correct spot along the
-   * path — found by comparing the click to every existing segment
-   * (source -> waypoints... -> target) and picking the nearest one. */
+  /** Grabbing a bundle's own line (not an existing waypoint handle). Two
+   * gestures share this hit target, told apart by pointer travel at release
+   * (the drag threshold, never a modifier key — house rule, review C9):
+   *
+   *  - a bundle WITH routing nodes: press-and-drag translates the whole
+   *    routing shape (bundle-level waypoint editing — every bend moves
+   *    together, endpoints stay plugged in); a plain click inserts one new
+   *    routing node at the click position, in the correct spot along the
+   *    path, exactly as before this gesture existed.
+   *  - a bundle with NO waypoints has no shape to translate, so it keeps the
+   *    original gesture outright: press inserts a node and drags it.
+   */
   const onBundleMouseDown = useCallback(
     (bundleId: string, e: React.MouseEvent) => {
       e.stopPropagation();
@@ -873,6 +956,7 @@ export function LayoutCanvas({
       const b = bundle && doc.components[bundle.targetId];
       if (!bundle || !a?.layoutPosition || !b?.layoutPosition) return;
       setSelected({ kind: 'bundle', id: bundleId });
+      setNotice(null);
       const clickMm = clientToMm(e.clientX, e.clientY);
       const pts = [a.layoutPosition, ...(bundle.waypoints ?? []), b.layoutPosition];
       let insertAt = 0;
@@ -881,15 +965,15 @@ export function LayoutCanvas({
         const d = distToSegmentSq(clickMm, pts[i]!, pts[i + 1]!);
         if (d < bestDist) { bestDist = d; insertAt = i; }
       }
-      store.transact('Add routing node', (draft) => {
-        const bd = draft.bundles[bundleId];
-        if (!bd) return;
-        if (!bd.waypoints) bd.waypoints = [];
-        bd.waypoints.splice(insertAt, 0, clickMm);
-      });
-      setDraggingWaypoint({ bundleId, index: insertAt, pointerStartX: e.clientX, pointerStartY: e.clientY, posStartX: clickMm.x, posStartY: clickMm.y });
+      if ((bundle.waypoints ?? []).length === 0) {
+        insertWaypoint(bundleId, insertAt, clickMm);
+        setDraggingWaypoint({ bundleId, index: insertAt, pointerStartX: e.clientX, pointerStartY: e.clientY, posStartX: clickMm.x, posStartY: clickMm.y });
+        return;
+      }
+      pendingBundleClick.current = { bundleId, clickMm, insertAt };
+      bundleRouting.startBundleDrag(bundleId, e.clientX, e.clientY, bundle.waypoints ?? []);
     },
-    [doc, store, clientToMm],
+    [doc, store, clientToMm, insertWaypoint, bundleRouting],
   );
 
   const onWaypointMouseDown = useCallback(
@@ -926,6 +1010,35 @@ export function LayoutCanvas({
       store.transact('Edit bundle length', (draft) => {
         const b = draft.bundles[bundleId];
         if (b) b.length = mm;
+      });
+    },
+    [store],
+  );
+
+  /** Bundle outline color (Phase 2a). Stored on the bundle so it survives
+   * reload and every view agrees; `undefined` means "use the default" and is
+   * collapsed away rather than serialised as an explicit default. */
+  const setBundleColor = useCallback(
+    (bundleId: string, color: string | undefined) => {
+      store.transact('Set bundle color', (draft) => {
+        const b = draft.bundles[bundleId];
+        if (!b) return;
+        if (color === undefined || color === DEFAULT_BUNDLE_COLOR) delete b.color;
+        else b.color = color;
+      });
+    },
+    [store],
+  );
+
+  /** Free user-facing bundle label (Phase 2a); empty collapses to unset. */
+  const setBundleLabel = useCallback(
+    (bundleId: string, label: string | undefined) => {
+      store.transact('Set bundle label', (draft) => {
+        const b = draft.bundles[bundleId];
+        if (!b) return;
+        const trimmed = label?.trim();
+        if (trimmed) b.label = trimmed;
+        else delete b.label;
       });
     },
     [store],
@@ -1020,6 +1133,25 @@ export function LayoutCanvas({
   const selectedComponent = selected?.kind === 'component' && !inlinePassThroughs.has(selected.id) ? doc.components[selected.id] : undefined;
   const selectedBundle = selected?.kind === 'bundle' ? doc.bundles[selected.id] : undefined;
 
+  // Phase 2a inspector data for the selected bundle. Which wires are members
+  // (and whether each CAN leave) is derived, never tracked on the wire — see
+  // bundleRouting.ts's header for why extraction is a frozen-route override.
+  const selectedScene = selectedBundle ? sceneBundleById.get(selectedBundle.id) : undefined;
+  const selectedBundleWires = useMemo(() => {
+    if (!selectedBundle) return [] as { id: string; refdes: string }[];
+    const ids = [...new Set(derived.bundleContents.get(selectedBundle.id) ?? [])];
+    return ids.map((id) => ({ id, refdes: doc.wires[id]?.refdes ?? id }));
+  }, [selectedBundle, derived.bundleContents, doc.wires]);
+  const extractableWires = useMemo(() => {
+    const m = new Map<string, boolean>();
+    if (selectedBundle) {
+      for (const w of selectedBundleWires) {
+        m.set(w.id, computeRouteAvoidingBundle(doc, w.id, selectedBundle.id) !== undefined);
+      }
+    }
+    return m;
+  }, [selectedBundle, selectedBundleWires, doc]);
+
   return (
     <div style={s.root}>
       <div style={s.toolbar}>
@@ -1048,8 +1180,9 @@ export function LayoutCanvas({
           </div>
         )}
         {pendingBundleFrom && <span style={s.hint}>Click another component to connect a bundle, or click it again to cancel.</span>}
-        {!pendingBundleFrom && Object.keys(doc.bundles).length > 0 && (
-          <span style={s.hintMuted}>Drag a bundle's line to add a routing node; hover any node to see which wires pass through it.</span>
+        {notice && <span style={s.hint}>{notice}</span>}
+        {!pendingBundleFrom && !notice && Object.keys(doc.bundles).length > 0 && (
+          <span style={s.hintMuted}>Drag a bundle's line to move all its routing nodes, or click it to add one; select a bundle to extract wires. Hover any node to see which wires pass through it.</span>
         )}
       </div>
 
@@ -1085,62 +1218,82 @@ export function LayoutCanvas({
               </defs>
               <rect x={0} y={0} width={maxX} height={maxY} fill="url(#layout-dot-grid)" />
 
-              {Object.values(doc.bundles).map((b) => {
-                // Skip bundles absorbed into a merged inline pass-through
-                // line (rendered separately, below the node loop) —
-                // drawing them here too would duplicate the line.
-                if (absorbedBundleIds.has(b.id)) return null;
-                const a = doc.components[b.sourceId];
-                const t = doc.components[b.targetId];
-                if (!a?.layoutPosition || !t?.layoutPosition) return null;
-                const pa = toPx(a.layoutPosition);
-                const pt = toPx(t.layoutPosition);
-                const waypointsPx = (b.waypoints ?? []).map(toPx);
-                // Ordinary connectors attach at their glyph's cable-stub tip
-                // (the fixed point wires leave from, given the glyph's own
-                // auto-computed orientation); branch points have no facing
-                // and just clip to their little circle, aimed at the
-                // first/last bend (or the other end) so the line still
-                // points the right direction through waypoints.
-                const aAimAt = waypointsPx[0] ?? { x: pt.x, y: pt.y };
-                const tAimAt = waypointsPx[waypointsPx.length - 1] ?? { x: pa.x, y: pa.y };
-                const from = a.type === 'branchPoint' ? branchOutlinePoint(pa, aAimAt) : (nodeGlyphs.get(a.id)?.stubEnd ?? pa);
-                const to = t.type === 'branchPoint' ? branchOutlinePoint(pt, tAimAt) : (nodeGlyphs.get(t.id)?.stubEnd ?? pt);
-                const polyPoints = [from, ...waypointsPx, to];
-                // Smooth spline instead of a sharp-angled polyline (Connor:
-                // "make the layout routing more flowy") — see
-                // smoothBundlePath's doc comment.
-                const pathD = smoothBundlePath(polyPoints);
+              {drawableBundles.map(({ bundle: b, pathD, pointsPx, waypointsPx }) => {
+                const sb = sceneBundleById.get(b.id);
+                if (!sb) return null;
                 const isSelected = selected?.kind === 'bundle' && selected.id === b.id;
-                const signalNames = bundleSignalTooltip(derived.bundleContents.get(b.id) ?? [], doc);
+                const signalNames = bundleSignalTooltip(sb.wireIds, doc);
                 // Cross-pane highlight: this bundle is directly hovered, or
                 // it's on the route of a wire hovered over in Schematic
                 // (Connor: "highlight all wires that route through that
                 // point" — the same relationship in reverse).
                 const isHighlighted = hoveredBundleId === b.id || !!highlightedBundleIds?.has(b.id);
+                // Phase 2a visual feedback: the bundle being dragged
+                // ghost-fades while its shape follows the cursor.
+                const isBundleDragged = !!bundleRouting.drag?.moved
+                  && bundleRouting.drag.kind === 'bundle'
+                  && bundleRouting.drag.bundleId === b.id;
+                const tooltip = [
+                  `${sb.labelText}${b.length !== undefined ? ` · authored length ${b.length} mm` : ''}`,
+                  signalNames,
+                  'Drag the line to move all routing nodes; click to add one.',
+                ].join('\n');
                 return (
-                  <g key={b.id}>
-                    {/* Fat invisible hit-target; grabbing anywhere on it (off
-                       an existing routing-node handle) inserts a new bend.
-                       Also the source of cross-pane bundle hover. */}
-                    <path d={pathD} fill="none" stroke="transparent" strokeWidth={14}
-                      style={{ cursor: 'crosshair' }}
+                  <g key={b.id} opacity={isBundleDragged ? 0.55 : 1}>
+                    {/* Fat invisible hit-target — the bundle-outline drag
+                        surface (cursor: move). Also the source of cross-pane
+                        bundle hover. */}
+                    <path d={pathD} fill="none" stroke="transparent"
+                      strokeWidth={Math.max(14, sb.outlineWidthPx + 6)}
+                      style={{ cursor: 'move' }}
                       onMouseDown={(e) => onBundleMouseDown(b.id, e)}
                       onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'bundle', id: b.id }); }}
                       onMouseEnter={() => onHoverBundle?.(b.id)} onMouseLeave={() => onHoverBundle?.(null)}>
-                      <title>{`${b.refdes} — ${signalNames}`}</title>
+                      <title>{tooltip}</title>
                     </path>
+                    {/* Bundle body — the diameter indicator (pain point 3):
+                        stroke width is the derived diameter to scale, so a
+                        fat run reads as fat. Color is the bundle's own
+                        (Phase 2a), brighter on hover/selection. */}
+                    <path d={pathD} fill="none" stroke={sb.color}
+                      strokeOpacity={isSelected || isHighlighted ? 0.5 : 0.28}
+                      strokeWidth={sb.outlineWidthPx} strokeLinecap="round"
+                      style={{ pointerEvents: 'none' }} />
+                    {/* Conflict indicator: this bundle's path crosses another
+                        bundle's path (or its own) — red dashed outline over
+                        the body, exact spots marked below. */}
+                    {sb.hasCrossing && (
+                      <path d={pathD} fill="none" stroke={theme.color.danger}
+                        strokeOpacity={0.65} strokeWidth={sb.outlineWidthPx + 3}
+                        strokeDasharray="7 5" strokeLinecap="round"
+                        style={{ pointerEvents: 'none' }} />
+                    )}
                     {isHighlighted && (
                       <path d={pathD} fill="none" stroke={theme.color.warning}
                         strokeOpacity={0.5} strokeWidth={8} strokeLinecap="round"
                         style={{ pointerEvents: 'none' }} />
                     )}
                     <path d={pathD} fill="none"
-                      stroke={isSelected || isHighlighted ? theme.color.accent : theme.color.textFaint}
+                      stroke={isSelected || isHighlighted ? theme.color.accent : sb.color}
                       strokeWidth={isSelected || isHighlighted ? 3 : 2}
                       strokeLinecap="round"
                       strokeDasharray={b.length === undefined ? '5 4' : undefined}
                       style={{ pointerEvents: 'none' }} />
+                    {sb.crossings.map((c, i) => (
+                      <circle key={`cross-${i}`} cx={c.x} cy={c.y} r={4}
+                        fill={theme.color.danger} stroke={theme.color.surface} strokeWidth={1.5}
+                        style={{ pointerEvents: 'none' }}>
+                        <title>{`${b.refdes} crosses another bundle's path here`}</title>
+                      </circle>
+                    ))}
+                    {/* Bundle label: refdes/label, wire count, gauge range,
+                        diameter — anchored at the path's midpoint. */}
+                    <text x={sb.labelPosition.x} y={sb.labelPosition.y - sb.outlineWidthPx / 2 - 5}
+                      textAnchor="middle" fontSize={10.5} fontWeight={600}
+                      fill={isSelected || isHighlighted ? theme.color.textStrong : theme.color.textMuted}
+                      style={{ pointerEvents: 'none' }}>
+                      {sb.labelText}
+                    </text>
                     {/* Routing-node handles — draggable, right-click to remove. */}
                     {waypointsPx.map((wp, i) => (
                       <circle
@@ -1155,9 +1308,51 @@ export function LayoutCanvas({
                         <title>{`Routing node on ${b.refdes} — ${signalNames}\nDrag to move, right-click to remove.`}</title>
                       </circle>
                     ))}
+                    {/* Extraction handles — one per wire, visible while the
+                        bundle is selected (Phase 2a): drag one off the bundle
+                        to extract that wire. The Layout pane draws bundles,
+                        not individual wires, so the handles sit spaced along
+                        the bundle's own path — one distinct grab target per
+                        member wire. Handles are positioned on the control
+                        polyline, not the drawn Catmull-Rom spline — an
+                        accepted approximation; see the polyline-vs-spline
+                        note on emitBundleGeometry. */}
+                    {isSelected && sb.wireIds.map((wireId, i) => {
+                      const pos = pointAtFraction(pointsPx, (i + 1) / (sb.wireCount + 1)).point;
+                      const wireRefdes = doc.wires[wireId]?.refdes ?? wireId;
+                      return (
+                        <circle
+                          key={`extract-${wireId}`} cx={pos.x} cy={pos.y} r={5}
+                          fill={theme.color.surface} stroke={sb.color} strokeWidth={2}
+                          style={{ cursor: 'grab' }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setNotice(null);
+                            bundleRouting.startWireExtract(wireId, b.id, e.clientX, e.clientY);
+                          }}
+                        >
+                          <title>{`${wireRefdes} in ${b.refdes}\nDrag away from the bundle to extract this wire.`}</title>
+                        </circle>
+                      );
+                    })}
                   </g>
                 );
               })}
+
+              {/* Wire-extraction drag preview: the grabbed wire's handle
+                  follows the cursor; releasing past the drag threshold
+                  extracts it (a frozen route around the bundle). */}
+              {bundleRouting.drag?.kind === 'wire' && bundleRouting.drag.moved && bundleRouting.dragPointer && (
+                <g style={{ pointerEvents: 'none' }}>
+                  <circle cx={bundleRouting.dragPointer.x} cy={bundleRouting.dragPointer.y} r={5}
+                    fill={theme.color.surface} stroke={theme.color.accent} strokeWidth={2} strokeDasharray="3 2" />
+                  <text x={bundleRouting.dragPointer.x + 9} y={bundleRouting.dragPointer.y - 9}
+                    fontSize={10.5} fontWeight={600} fill={theme.color.textStrong}>
+                    {`${doc.wires[bundleRouting.drag.wireId ?? '']?.refdes ?? ''} — release to extract`}
+                  </text>
+                </g>
+              )}
+
 
               {/* Inline pass-through components (Connor: "make layout
                  resistor appear in line... only one bundle should appear,
@@ -1388,8 +1583,20 @@ export function LayoutCanvas({
             {selectedBundle && (
               <BundleInspector
                 bundle={selectedBundle}
+                scene={selectedScene}
+                wires={selectedBundleWires}
+                canExtractWire={(wireId) => extractableWires.get(wireId) === true}
                 onSetLength={(mm) => setBundleLength(selectedBundle.id, mm)}
                 onSetSegmentLength={(i, mm) => setSegmentLength(selectedBundle.id, i, mm)}
+                onSetColor={(color) => setBundleColor(selectedBundle.id, color)}
+                onSetLabel={(label) => setBundleLabel(selectedBundle.id, label)}
+                onExtractWire={(wireId) => {
+                  const done = bundleRouting.extractWire(wireId, selectedBundle.id);
+                  if (!done) {
+                    const wire = doc.wires[wireId];
+                    setNotice(`${wire?.refdes ?? wireId} can't be extracted from ${selectedBundle.refdes} — it has no route that avoids the bundle.`);
+                  }
+                }}
                 onDelete={() => deleteBundle(selectedBundle.id)}
                 onClearRoutingNodes={() => store.transact('Clear routing nodes', (draft) => { const b = draft.bundles[selectedBundle.id]; if (b) b.waypoints = []; })}
                 onClose={() => setSelected(null)}
@@ -1422,12 +1629,22 @@ export function LayoutCanvas({
   );
 }
 
-function BundleInspector({
-  bundle, onSetLength, onSetSegmentLength, onDelete, onClearRoutingNodes, onClose,
+export function BundleInspector({
+  bundle, scene, wires, canExtractWire,
+  onSetLength, onSetSegmentLength, onSetColor, onSetLabel, onExtractWire,
+  onDelete, onClearRoutingNodes, onClose,
 }: {
-  bundle: { id: string; refdes: string; length?: number; waypoints?: Point[]; segmentLengths?: (number | undefined)[] };
+  bundle: { id: string; refdes: string; length?: number; waypoints?: Point[]; segmentLengths?: (number | undefined)[]; color?: string; label?: string };
+  /** Scene data (wire count, gauge range, derived diameter) — optional so the
+   * inspector still renders for a bundle the scene builder didn't emit. */
+  scene?: SceneBundle;
+  wires: { id: string; refdes: string }[];
+  canExtractWire: (wireId: string) => boolean;
   onSetLength: (mm: number | undefined) => void;
   onSetSegmentLength: (index: number, mm: number | undefined) => void;
+  onSetColor: (color: string | undefined) => void;
+  onSetLabel: (label: string | undefined) => void;
+  onExtractWire: (wireId: string) => void;
   onDelete: () => void;
   onClearRoutingNodes: () => void;
   onClose: () => void;
@@ -1442,6 +1659,38 @@ function BundleInspector({
           <button style={s.closeBtn} onClick={onClose} title="Close">×</button>
         </div>
         <div style={s.cardBody}>
+          {/* Phase 2a bundle properties: outline color + free label. The
+              color input can only express the default by picking it, so a
+              "reset" link appears once a custom color is authored. */}
+          <div style={s.kvRow}>
+            <span style={s.kvKey}>Outline color</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="color" value={bundle.color ?? DEFAULT_BUNDLE_COLOR}
+                onChange={(e) => onSetColor(e.target.value)}
+                style={{ width: 28, height: 22, padding: 0, border: `1px solid ${theme.color.border}`, borderRadius: 4, background: 'transparent', cursor: 'pointer' }}
+                title="Bundle outline color"
+              />
+              {bundle.color !== undefined && (
+                <button style={s.linkBtn} onClick={() => onSetColor(undefined)} title="Back to the default outline color">reset</button>
+              )}
+            </span>
+          </div>
+          <label style={s.fieldLabel}>Label</label>
+          <input
+            style={s.input} value={bundle.label ?? ''} placeholder={bundle.refdes}
+            onChange={(e) => onSetLabel(e.target.value)}
+          />
+          {/* Derived bundle facts (read-only): membership, gauge range and
+              diameter all come from the derive pipeline, never edited here. */}
+          {scene && (
+            <div style={s.kvRow}>
+              <span style={s.kvKey}>Wires</span>
+              <span style={s.kvVal}>
+                {scene.wireCount}{scene.gaugeLabel ? ` · ${scene.gaugeLabel}` : ''}{scene.diameterMm > 0 ? ` · Ø ${Number(scene.diameterMm.toPrecision(2))} mm` : ''}
+              </span>
+            </div>
+          )}
           <label style={s.fieldLabel}>Authored length (mm)</label>
           <input
             style={s.input} type="number" step="1" placeholder="using geometric estimate"
@@ -1474,6 +1723,32 @@ function BundleInspector({
                     />
                   </div>
                 ))}
+              </div>
+            </>
+          )}
+          {/* Member wires + extraction (Phase 2a): extracting gives the wire a
+              frozen route around the bundle. Disabled exactly when the bundle
+              is the wire's only way across — the tooltip says why. */}
+          {wires.length > 0 && (
+            <>
+              <label style={s.fieldLabel}>Wires in this bundle</label>
+              <div style={s.segmentList}>
+                {wires.map((w) => {
+                  const canExtract = canExtractWire(w.id);
+                  return (
+                    <div key={w.id} style={s.segmentRow}>
+                      <span style={s.segmentTag}>{w.refdes}</span>
+                      <button
+                        style={{ ...s.linkBtn, ...(canExtract ? {} : s.toolbarBtnDisabled) }}
+                        disabled={!canExtract}
+                        onClick={() => onExtractWire(w.id)}
+                        title={canExtract ? `Route ${w.refdes} around this bundle` : `${w.refdes} has no route that avoids this bundle`}
+                      >
+                        Extract
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}

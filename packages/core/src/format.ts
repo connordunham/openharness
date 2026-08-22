@@ -4,6 +4,49 @@
  * app, the CLI and future exporters all render the same value identically.
  */
 
+import type { GaugeUnit } from './types.js';
+
+/**
+ * One gauge value as a human reads it, in its own unit — the NUMBER only,
+ * without the unit suffix, so callers can compose ranges like "18–22 AWG"
+ * with a single trailing unit (see gaugeUnitSuffix).
+ *
+ * AWG sizes 0, −1, −2, −3 are the standard's 1/0…4/0 — printing "-1" would
+ * be machine output, so they render the way the table publishes them
+ * (ASTM B258 writes the sizes this way; see gauge.ts). mm² keeps at most
+ * three significant figures (catalog precision); circular mils are whole
+ * numbers in practice.
+ */
+export function formatGaugeValue(value: number, unit: GaugeUnit): string {
+  switch (unit) {
+    case 'awg':
+      if (value === 0) return '1/0';
+      if (value === -1) return '2/0';
+      if (value === -2) return '3/0';
+      if (value === -3) return '4/0';
+      return `${value}`;
+    case 'mm2':
+      return `${Number(value.toPrecision(3))}`;
+    case 'cmil':
+    case 'kcmil':
+      return `${Math.round(value)}`;
+    default:
+      return `${value}`;
+  }
+}
+
+/** The trailing unit label for a gauge display value. */
+export function gaugeUnitSuffix(unit: GaugeUnit): string {
+  switch (unit) {
+    case 'awg': return ' AWG';
+    case 'mm2': return ' mm²';
+    case 'cmil': return ' cmil';
+    case 'kcmil': return ' kcmil';
+    default: return '';
+  }
+}
+
+
 /**
  * Engineering-notation formatter for the derived parasitic readouts.
  *

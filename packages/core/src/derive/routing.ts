@@ -175,7 +175,7 @@ interface LayoutGraph {
   bundlesById: Map<BundleId, { sourceId: ComponentId; targetId: ComponentId; authored: boolean }>;
 }
 
-function buildLayoutGraph(doc: HarnessDocument): LayoutGraph {
+function buildLayoutGraph(doc: HarnessDocument, excludeBundleId?: BundleId): LayoutGraph {
   const adjacency = new Map<ComponentId, LayoutEdge[]>();
   const bundlesById = new Map<BundleId, { sourceId: ComponentId; targetId: ComponentId; authored: boolean }>();
 
@@ -185,6 +185,9 @@ function buildLayoutGraph(doc: HarnessDocument): LayoutGraph {
   };
 
   for (const [bundleId, bundle] of Object.entries(doc.bundles)) {
+    // The extraction path (computeRouteAvoidingBundle) asks for a route with
+    // one bundle removed; dropping the edge here is the whole of that.
+    if (bundleId === excludeBundleId) continue;
     const a = doc.components[bundle.sourceId];
     const b = doc.components[bundle.targetId];
     if (!a || !b) continue;
@@ -272,6 +275,54 @@ function shortestPath(graph: LayoutGraph, from: ComponentId, to: ComponentId): B
   return bestPath.has(to) ? bestPath.get(to) : undefined;
 }
 
+/**
+ * The tie-break key for a candidate route. The separator is NUL — spelled as
+ * an escape, not a literal byte, because an invisible literal once got
+ * silently edited into a space. NUL sorts below every printable character,
+ * so the joined key orders route SEQUENCES unambiguously even when bundle ids
+ * contain spaces (imported documents can): a space separator collapses
+ * `['a b','c']` and `['a','b c']` into the same key, and the tie-break
+ * degrades to "whichever path Dijkstra found first" — insertion-order
+ * dependent, exactly what the tie-break exists to prevent.
+ */
 function joinPath(path: BundleId[]): string {
-  return path.join(' ');
+  return path.join('\0');
+}
+
+/**
+ * The shortest route for one wire through the layout graph with a single
+ * bundle removed — the core of "extract this wire from that bundle" (Phase 2,
+ * docs/PHASE2-REFINED-DESIGN.md): extracting a wire means re-routing it around
+ * the bundle, which is only possible when another path exists.
+ *
+ * Returns the alternate bundle sequence, or `undefined` when the wire has no
+ * route that avoids the bundle (the bundle is its only way across, or the
+ * wire is not routable through the graph at all — shield drain, cable core,
+ * unplaced endpoint, same-host loop). Callers turn a found path into a frozen
+ * `Wire.route` override; `computeRoutes` above then honours it (spec §6.2),
+ * which is what keeps the wire out of the bundle afterwards.
+ *
+ * Deliberately does NOT check whether the wire currently uses `excludeBundleId`
+ * — that is the caller's question, and this function stays a pure
+ * "is there another way across" oracle.
+ */
+export function computeRouteAvoidingBundle(
+  doc: HarnessDocument,
+  wireId: string,
+  excludeBundleId: BundleId,
+): BundleId[] | undefined {
+  const wire = doc.wires[wireId];
+  if (!wire) return undefined;
+
+  // Same short-circuits as computeRoutes: these wires have no bundle path by
+  // construction, so there is nothing to re-route around anything.
+  if (wire.source.kind === 'shieldNode' || wire.target.kind === 'shieldNode') return undefined;
+  if (cableCoreStatus(doc, wire.source) || cableCoreStatus(doc, wire.target)) return undefined;
+
+  const aHost = resolveEndpointHost(doc, wire.source, new Set(), wireId);
+  const bHost = resolveEndpointHost(doc, wire.target, new Set(), wireId);
+  if (aHost === undefined || bHost === undefined || aHost === bHost) return undefined;
+
+  const graph = buildLayoutGraph(doc, excludeBundleId);
+  return shortestPath(graph, aHost, bHost);
 }

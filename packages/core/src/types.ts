@@ -631,6 +631,18 @@ export interface Mate {
 // Bundles (spec §4.4)
 // ---------------------------------------------------------------------------
 
+/**
+ * [inferred] — Phase 2 bundle visualisation (docs/PHASE2-REFINED-DESIGN.md):
+ * bundles are drawn outlined in a distinct, per-bundle configurable color.
+ * The color is a *display* default, so it lives in the document (survives
+ * reload, every view agrees) rather than in a view setting. Unset reads as
+ * this value everywhere the bundle is drawn — deliberately NOT seeded into
+ * existing bundles by a migration, so loading an old document writes nothing
+ * back into it (same "unset reads as the default" convention as
+ * `DocumentSettings.twistedPairStyle` and `Shield.position`).
+ */
+export const DEFAULT_BUNDLE_COLOR = '#8b5cf6';
+
 export interface Bundle {
   id: BundleId;
   refdes: string;
@@ -639,6 +651,15 @@ export interface Bundle {
   /** Authored length in the document's lengthUnit at the API boundary; stored as integer µm internally (spec §6.3). */
   length?: number;
   waypoints?: Point[];
+  /** [inferred] — Phase 2 bundle visualisation (docs/PHASE2-REFINED-DESIGN.md).
+   * Display color for the bundle outline; unset reads as DEFAULT_BUNDLE_COLOR.
+   * NOT the diameter: that is derived, not authored — see
+   * derive/bundleAnalysis.ts and DerivedModel.bundleDiameters. */
+  color?: string;
+  /** [inferred] — Phase 2 bundle visualisation. Free user-facing name shown
+   * alongside the refdes in the Layout view; unset means the bundle is
+   * identified by its refdes alone. */
+  label?: string;
   /** [inferred] — Connor's follow-up: "Dimensions between each routing point
    * should be able to be recorded (every single point), but the layout can
    * be assumed to be not to scale." One entry per segment of the path
