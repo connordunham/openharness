@@ -27,10 +27,18 @@ the whole board.
                             └──────── fixes ──────────┘
 ```
 
-1. **Pick one packet** from `docs/tasks/README.md`, respecting the dependency
-   graph at the top of that file. There are now **two tracks**: the original
-   `T01`–`T15`, and the data layer `T16`–`T22` (`docs/DATA-LAYER-SPEC.md`).
-   They are independent and can interleave. `T01` is genuinely first — three later
+1. **Pick one packet** from `docs/tasks/README.md`. That file opens with a
+   **Current priority** section naming the next packets in order. It is a
+   project-owner decision and it overrides the dependency graph below it — the
+   graph says what is *possible*, the priority says what is *wanted*. Do not
+   re-derive an order and start something else.
+
+   As of 2026-08-24 that order is: finish `T02` re-review and `T04`'s
+   running-app check, then `T16`, then `T17`/`T18`/`T20` in any order, then
+   `T19`. `T14` and `T15` are deliberately deferred behind that track.
+
+   If the priority section and the graph ever conflict, the priority section
+   wins and the graph is stale — say so rather than picking one. `T01` is genuinely first — three later
    packets need gauge comparison and each would otherwise invent its own,
    differently wrong, version. `T14` and `T15` are pull-forward candidates:
    they are the checks most likely to catch a defect in a harness someone

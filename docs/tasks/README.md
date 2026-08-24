@@ -3,7 +3,47 @@
 Ordered work, one packet per file. Each is self-contained — read
 `docs/HANDOFF.md` once, then only the packet you are doing.
 
+## Current priority — decided 2026-08-24
+
+**The data layer is next. Work `T16` → `T17`/`T18`/`T20` → `T19`, in that
+order.** This is a project-owner decision, not a derivation from the dependency
+graph. Do not re-derive an order from the graph below and start something else.
+
+```
+  finish first ──> T02 re-review, T04 running-app check
+                   (both are mid-flight; land them before opening new work)
+
+  then, in order ─> T16  parts store            XL   ← start here
+                    T17  versioning             M  ┐
+                    T18  sourcing               M  ├ any order, all need T16
+                    T20  buffer / spools        M  ┘
+                    T19  resolution             M    (needs T16 + T18)
+
+  after that ─────> T21  BOM release            L    (needs T18, T19, T20)
+                    T22  tooling checklist      M    (needs T16, T19)
+                    T14  current capacity       L  ┐ the two rules the resident
+                    T15  bend radius            M  ┘ engineer named as highest
+                                                     value; deferred, not dropped
+```
+
+`T02` and `T04` are not "in progress" in any useful sense — they are finished
+code waiting on a check. Leaving them there while starting a large new track is
+how they quietly become someone else's problem. `T04`'s outstanding item is a
+running-app verification, which is exactly the step this project has been burned
+by skipping before.
+
+`T16` is the largest single packet in the list and it is also the riskiest, for
+a reason unrelated to its size: it introduces the project's first native module
+(`better-sqlite3`), and the current packaging config assumes there are none. It
+is not done until a **packaged** build opens a library. A dev-mode run proves
+nothing.
+
+Everything in `T05`–`T13` is parked until the data-layer track above is
+through. `T14` and `T15` are parked too — see the note below.
+
 ## Order and dependencies
+
+*Reference only. The priority above overrides the reading order here.*
 
 ```
 T01 gauge conversion ──┬── T02 mates ── T03 wire-gauge-vs-contact DRC
@@ -30,8 +70,13 @@ T16 parts store ──┬── T17 versioning
 `T14` and `T15` are the design-rule checks the project's harness engineer named
 as highest-value (`docs/DOMAIN-DECISIONS.md` D4). They sit outside the graph
 above because they are independent of it — T14 needs T01, T15 needs nothing.
-Both are candidates to pull forward: they are the checks most likely to catch a
-defect in a harness someone actually builds.
+They are the checks most likely to catch a defect in a harness someone actually
+builds.
+
+They are **deliberately deferred behind the data layer**, not forgotten. That
+was a considered call by the project owner with the trade-off stated. `T15`
+needs no prerequisites and is an M, so it can be pulled forward at any point
+without disturbing the data-layer track.
 
 **The data layer (`T16`–`T22`) is a new requirement** — see
 `docs/DATA-LAYER-SPEC.md` for the adopted specification, the six deviations from
