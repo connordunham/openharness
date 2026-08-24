@@ -103,3 +103,22 @@ Questions the code currently guesses at, awaiting a ruling:
 - Mixed-metal contact pairing: worth a rule at all, or too rare to warrant one?
 - Service loop and strip-length allowances: the length pipeline supports both;
   no rule checks that they are sane.
+
+From the data layer specification (`docs/DATA-LAYER-SPEC.md`, added 2026-08-24).
+None of these block work until the packet that needs them:
+
+- **Spool rounding** (`T20`): is ceiling right, or should partial-spool
+  purchasing be allowed where a supplier permits it? The submitted spec raises
+  this itself. Ceiling is implemented as the default until ruled otherwise.
+- **What the scrap/waste buffer applies to** (`T20`): cut length only, or also
+  service loops and strip-length allowance? The length pipeline supports all
+  three, so this is a choice rather than a limitation.
+- **Wire outer diameter — nominal or maximum?** (`T16`): bundle diameter feeds
+  both current derating (`T14`) and bend radius (`T15`), so this one choice
+  propagates into two safety-relevant rules.
+- **Crimp tool calibration** (`T22`): should an out-of-calibration crimper on a
+  required tool raise a document diagnostic, or is that a quality-system
+  concern that belongs outside this tool? Reported but not ruled on for now.
+- **Per-cavity gauge override** (`T16`): is a cavity whose gauge range is
+  narrower than its connector's a real thing worth modelling, or does it only
+  ever indicate a data-entry error?

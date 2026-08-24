@@ -33,6 +33,15 @@ Then build on it.
 One user-visible action is one transaction, so one Ctrl-Z undoes it. Automation
 uses the same path as the GUI. There is no second door, deliberately.
 
+**Two stores, and they are not interchangeable.** The parts library
+(`@openharness/parts`, SQLite) is shared, slow-changing and knows nothing about
+projects. The project document (`.ohd`, JSON, sorted keys) is fast-changing and
+git-diffable. They are joined by `part_number` as plain text, at the
+application layer, at BOM-release time — never by a live foreign key, and never
+by putting project data in the library or library data in the document. See
+`docs/DATA-LAYER-SPEC.md`. `.ohd` stays JSON: diffability is a product
+differentiator, not an implementation detail.
+
 ## Data rules
 
 **`undefined` means "not stated". It never means zero.** A wire with no
@@ -46,6 +55,10 @@ export — never in the middle.
 **Never add AWG numbers together** (`DOMAIN-DECISIONS.md` D2). Convert to mm²,
 sum, convert back only to display. Adding AWG numbers is arithmetically
 meaningless and directionally backwards.
+
+**Display units are not storage units.** A field recording `in` / `cm` / `ft` /
+`m` records what the user typed or sees. The stored value is always canonical
+(µm, mm²). Convert on save and on display, never in between.
 
 **Additive model changes do not bump `formatVersion`.** Migrations run once at
 the load boundary in `core/migrate.ts`. Adding an optional field is not

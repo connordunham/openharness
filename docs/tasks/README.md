@@ -14,9 +14,17 @@ T06 view toggles + selection info   (independent)
 T07 search + destinations   (after T06: shares the view-options surface)
 T08 groups / frames   (independent)
 T09 PDF export ── T10 XLSX wiring table   (T09 first: shares the page model)
-T11 parts library   (independent)
+T11 parts library   SUPERSEDED — see the data layer below
 T12 formboard   (after T04: needs zoom to be usable at 1:1)
 T13 automation surface   (last: the API should stop moving first)
+
+Data layer (docs/DATA-LAYER-SPEC.md) — a second, largely independent track:
+
+T16 parts store ──┬── T17 versioning
+                  ├── T18 sourcing ──┐
+                  ├── T19 resolution ─┼── T21 BOM release
+                  ├── T20 buffer/spools ┘
+                  └── T22 tooling checklist   (also needs T19)
 ```
 
 `T14` and `T15` are the design-rule checks the project's harness engineer named
@@ -24,6 +32,17 @@ as highest-value (`docs/DOMAIN-DECISIONS.md` D4). They sit outside the graph
 above because they are independent of it — T14 needs T01, T15 needs nothing.
 Both are candidates to pull forward: they are the checks most likely to catch a
 defect in a harness someone actually builds.
+
+**The data layer (`T16`–`T22`) is a new requirement** — see
+`docs/DATA-LAYER-SPEC.md` for the adopted specification, the six deviations from
+the submitted version, and why each was made. `T16` is its `T01`: everything
+else in that track needs the store and its canonical units first. The track is
+independent of `T02`–`T15` and can run in parallel with them, with one
+exception — `T16` adds the project's first native module, which changes how the
+app is packaged. Read its Traps before starting.
+
+`T11` is superseded by that track. Its storage choice lost; its sync semantics
+were right and are carried forward verbatim into `T19`.
 
 `T01` is genuinely first. Three later packets need gauge comparison and each
 would otherwise invent its own, differently wrong, version.
@@ -42,11 +61,18 @@ would otherwise invent its own, differently wrong, version.
 | T08 | Groups and the device convention | M | not started |
 | T09 | PDF export | L | not started |
 | T10 | XLSX wiring table | M | not started |
-| T11 | Local parts library | L | not started |
+| T11 | Local parts library | L | ⛔ superseded by T16–T22 — sync contract carried into T19 |
 | T12 | Formboard | XL | not started |
 | T13 | Automation surface | L | not started |
 | T14 | Current capacity with bundle derating | L | not started |
 | T15 | Bend radius | M | not started |
+| T16 | Parts library store (SQLite) | XL | not started |
+| T17 | Part versioning and revision log | M | not started |
+| T18 | Suppliers, sourcing and price history | M | not started |
+| T19 | Part-number resolution between stores | M | not started |
+| T20 | Scrap buffer and spool quantity | M | not started |
+| T21 | Released BOM snapshot | L | not started |
+| T22 | Tooling registry and shop checklist | M | not started |
 | Phase 2a | Cable bundle routing: bundle visualisation & interaction | L | implemented — bundle outline/label/diameter/conflict rendering, drag-to-move and wire extraction on the Layout canvas (`docs/PHASE2-REFINED-DESIGN.md`); reviewer fixes applied (NUL tie-break separator restored in `joinPath` with a regression test, polyline-vs-spline approximation documented); 68 new tests (464 total), all four gates green; running-app check outstanding |
 | Phase 2b | Cable bundle routing: connector orientation | M | implemented — R rotates a selected connector 90° (Shift+R auto-optimizes: fewest bundle crossings) on the Layout canvas; stored `rotation` is an offset on top of glyph auto-orientation, labelled on the canvas, undoable and persisted; orientation/attach/polyline geometry extracted to `render/layoutOrientation.ts`, optimizer in `render/connectorOptimization.ts`; schematic-scene changes in the brief don't apply (schematic boxes route horizontally — see packet report); reviewer fixes applied (inline pass-through scoring approximation documented honestly at all three claim sites, direct `countPathCrossings` self/pair-crossing/exclusion tests, rotation label gated to connectors); 50 new tests (514 total), all four gates green; running-app check outstanding |
 

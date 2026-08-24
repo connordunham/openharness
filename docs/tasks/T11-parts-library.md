@@ -1,5 +1,16 @@
 # T11 — Local parts library
 
+> **SUPERSEDED.** Do not implement this packet. The storage choice below (a
+> sorted-key JSON `.ohl` file) is replaced by a SQLite parts library —
+> see `docs/DATA-LAYER-SPEC.md` and packets `T16`–`T22`.
+>
+> The *behavioural contract* below was right and is carried forward verbatim
+> into `T19`: per-part sync state, directional push/pull with no merge, every
+> field must match to count as synced, duplicate numbers are a diagnostic,
+> numberless parts are excluded from comparison, and nothing auto-syncs on
+> load. Read it for the reasoning; implement `T19`.
+
+
 **Size** L · **Package** `io`, `app`
 
 ## Goal

@@ -28,7 +28,9 @@ the whole board.
 ```
 
 1. **Pick one packet** from `docs/tasks/README.md`, respecting the dependency
-   graph at the top of that file. `T01` is genuinely first — three later
+   graph at the top of that file. There are now **two tracks**: the original
+   `T01`–`T15`, and the data layer `T16`–`T22` (`docs/DATA-LAYER-SPEC.md`).
+   They are independent and can interleave. `T01` is genuinely first — three later
    packets need gauge comparison and each would otherwise invent its own,
    differently wrong, version. `T14` and `T15` are pull-forward candidates:
    they are the checks most likely to catch a defect in a harness someone
@@ -60,6 +62,19 @@ the whole board.
 - **Never touch `docs/DOMAIN-DECISIONS.md`.** Only the resident harness
   engineer rules on those. If a packet needs a ruling that isn't there, stop
   and put the question to Connor.
+- **`T16` changes how the app is packaged.** It introduces the project's first
+  native module (`better-sqlite3`), and `electron-builder.cjs` currently assumes
+  there are none — its `files` allowlist excludes `node_modules` and
+  `npmRebuild` is `false`. Both assumptions die with that packet. It is not done
+  until a *packaged* build launches and opens a library; a dev-mode run proves
+  nothing here.
+
+- **The data layer has five open engineering questions** in
+  `docs/DOMAIN-DECISIONS.md` under "Still open". None block work — each packet
+  says what to do in the meantime — but do not let an agent quietly decide one.
+  If a packet's implementation forces a choice the spec left open, stop and put
+  it to Connor.
+
 - **Escalate rather than guess** on anything that changes the document model,
   the file format, or a design rule's severity. Those are expensive to reverse
   and other people's files are downstream of them.
