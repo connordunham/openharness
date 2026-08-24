@@ -5,14 +5,12 @@ description: >-
   map instead of burning context finding one. Gathers; never concludes.
 mode: subagent
 temperature: 0.1
-tools:
-  read: true
-  grep: true
-  glob: true
-  bash: true
-  edit: false
-  write: false
-  patch: false
+permission:
+  read: allow
+  glob: allow
+  grep: allow
+  bash: allow
+  edit: deny
 ---
 
 You do reconnaissance for one task packet. You find things and write them down.

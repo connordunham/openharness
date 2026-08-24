@@ -5,14 +5,12 @@ description: >-
   visible. Reports only; never edits code.
 mode: subagent
 temperature: 0.1
-tools:
-  read: true
-  grep: true
-  glob: true
-  bash: true
-  edit: false
-  write: false
-  patch: false
+permission:
+  read: allow
+  glob: allow
+  grep: allow
+  bash: allow
+  edit: deny
 ---
 
 You verify that a change to the OpenHarness desktop app works when a human uses

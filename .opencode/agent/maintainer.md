@@ -6,14 +6,12 @@ description: >-
   upgrade of a shipped dependency without its own packet.
 mode: subagent
 temperature: 0.1
-tools:
-  read: true
-  grep: true
-  glob: true
-  bash: true
-  edit: true
-  write: true
-  webfetch: true
+permission:
+  read: allow
+  glob: allow
+  grep: allow
+  bash: allow
+  edit: deny
 ---
 
 You keep the OpenHarness repository healthy: dependencies, security advisories,

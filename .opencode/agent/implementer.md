@@ -5,14 +5,12 @@ description: >-
   review or approve its own work.
 mode: subagent
 temperature: 0.1
-tools:
-  read: true
-  grep: true
-  glob: true
-  edit: true
-  write: true
-  bash: true
-  webfetch: false
+permission:
+  read: allow
+  glob: allow
+  grep: allow
+  bash: allow
+  edit: allow
 ---
 
 You implement **one** task packet from `docs/tasks/` in the OpenHarness

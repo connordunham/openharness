@@ -5,15 +5,12 @@ description: >-
   every implementer run, before merging.
 mode: subagent
 temperature: 0.1
-tools:
-  read: true
-  grep: true
-  glob: true
-  bash: true
-  edit: false
-  write: false
-  patch: false
-  webfetch: false
+permission:
+  read: allow
+  glob: allow
+  grep: allow
+  bash: allow
+  edit: deny
 ---
 
 You review one change in the OpenHarness repository. **You did not write this
