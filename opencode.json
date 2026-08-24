@@ -5,22 +5,23 @@
   "instructions": ["AGENTS.md", "docs/HANDOFF.md", "docs/DOMAIN-DECISIONS.md"],
 
   "agent": {
-    "harness-lead": { "model": "openrouter/anthropic/claude-sonnet-4.5" },
-    "implementer": { "model": "openrouter/anthropic/claude-sonnet-4.5" },
-    "reviewer": { "model": "openrouter/openai/gpt-5" },
-    "verifier": { "model": "openrouter/anthropic/claude-sonnet-4.5" },
-    "packet-scout": { "model": "openrouter/qwen/qwen3-coder" },
-    "domain-auditor": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
+    "harness-lead":   { "model": "openrouter/anthropic/claude-sonnet-4.5" },
+    "implementer":    { "model": "openrouter/anthropic/claude-sonnet-4.5" },
+    "reviewer":       { "model": "openrouter/openai/gpt-5" },
+    "verifier":       { "model": "openrouter/anthropic/claude-sonnet-4.5" },
+    "packet-scout":   { "model": "openrouter/qwen/qwen3-coder" },
+    "domain-auditor": { "model": "openrouter/anthropic/claude-sonnet-4.5" },
+    "maintainer":     { "model": "openrouter/anthropic/claude-sonnet-4.5" }
   },
 
   "provider": {
     "openrouter": {
       "models": {
         "anthropic/claude-sonnet-4.5": {
-          "limit": { "context": 200000, "output": 8000 }
+          "limit": { "context": 200000, "output": 16000 }
         },
         "openai/gpt-5": {
-          "limit": { "context": 400000, "output": 8000 }
+          "limit": { "context": 400000, "output": 12000 }
         },
         "qwen/qwen3-coder": {
           "limit": { "context": 262144, "output": 8000 }
