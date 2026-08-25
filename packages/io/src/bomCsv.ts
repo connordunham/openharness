@@ -41,7 +41,22 @@ export function bomToCsv(bom: BomLine[]): string {
   return [COLUMNS, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
 }
 
+/**
+ * Escapes a cell for CSV output per RFC 4180, hardened against spreadsheet
+ * formula injection (CWE-1236).
+ *
+ * Cells starting with `=`, `+`, `-`, or `@` (after stripping leading whitespace)
+ * are force-quoted and prefixed with a tab character (`\t`). Prefixing with a tab
+ * neutralizes formula execution in Excel, LibreOffice, and Google Sheets by
+ * forcing cell evaluation to plain text, while avoiding visible artifact characters
+ * (unlike a leading single-quote `'` which can display literally in CSV viewers).
+ */
 function csvEscape(value: string): string {
-  if (/[",\r\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  if (/^\s*[=+@\-]/.test(value)) {
+    return `"\t${value.replace(/"/g, '""')}"`;
+  }
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
   return value;
 }
