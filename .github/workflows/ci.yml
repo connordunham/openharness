@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least-privilege default: nothing in this workflow needs to write to the
+# repo or open PRs/issues, and it runs on pull_request from forks.
+permissions:
+  contents: read
+
 env:
   # CI never launches the app, so skip the ~100 MB Electron binary download.
   ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
