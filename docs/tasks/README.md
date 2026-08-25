@@ -3,21 +3,26 @@
 Ordered work, one packet per file. Each is self-contained — read
 `docs/HANDOFF.md` once, then only the packet you are doing.
 
-## Current priority — decided 2026-08-24
+## Current priority — updated 2026-08-25
 
-**The data layer is next. Work `T16` → `T17`/`T18`/`T20` → `T19`, in that
-order.** This is a project-owner decision, not a derivation from the dependency
-graph. Do not re-derive an order from the graph below and start something else.
+**T16-T18 have landed. T19 and T20 are next (either order — both only need
+T16, which is done); then T21, then T22.** This is a project-owner decision,
+not a derivation from the dependency graph. Do not re-derive an order from the
+graph below and start something else.
 
 ```
-  finish first ──> T02 re-review, T04 running-app check
-                   (both are mid-flight; land them before opening new work)
+  finish first ──> Phase 2a / Phase 2b running-app check
+                   (both are implemented, reviewed, and gated green; the one
+                   thing not yet done is actually opening the app and looking
+                   at bundle rendering and connector rotation on the Layout
+                   canvas — land that before opening new work)
 
-  then, in order ─> T16  parts store            XL   ← start here
-                    T17  versioning             M  ┐
-                    T18  sourcing               M  ├ any order, all need T16
-                    T20  buffer / spools        M  ┘
-                    T19  resolution             M    (needs T16 + T18)
+  done ──────────> T16  parts store            XL   done
+                    T17  versioning             M    done
+                    T18  sourcing               M    done
+
+  then, in order ─> T19  resolution             M    (needs T16 + T18, both done)
+                    T20  buffer / spools        M    (needs T16, done)
 
   after that ─────> T21  BOM release            L    (needs T18, T19, T20)
                     T22  tooling checklist      M    (needs T16, T19)
@@ -26,17 +31,15 @@ graph. Do not re-derive an order from the graph below and start something else.
                                                      value; deferred, not dropped
 ```
 
-`T02` and `T04` are not "in progress" in any useful sense — they are finished
-code waiting on a check. Leaving them there while starting a large new track is
-how they quietly become someone else's problem. `T04`'s outstanding item is a
-running-app verification, which is exactly the step this project has been burned
-by skipping before.
+`T02` and `T04` are fully closed, running-app checks included. `Phase 2a` and
+`Phase 2b` are now sitting exactly where `T02`/`T04` used to sit: finished code,
+all four gates green, waiting on the one check that actually catches a
+rendering bug. Leaving that undone while starting `T19`/`T20` is the same
+mistake this note used to warn about.
 
-`T16` is the largest single packet in the list and it is also the riskiest, for
-a reason unrelated to its size: it introduces the project's first native module
-(`better-sqlite3`), and the current packaging config assumes there are none. It
-is not done until a **packaged** build opens a library. A dev-mode run proves
-nothing.
+`T16` shipped as planned: a packaged build opens a library, and the
+native-module rebuild is verified against Electron's ABI on every package run
+(`scripts/rebuild-native.mjs`) rather than trusted on exit code alone.
 
 Everything in `T05`–`T13` is parked until the data-layer track above is
 through. `T14` and `T15` are parked too — see the note below.
