@@ -5,7 +5,7 @@
  * All master tables carry `version INTEGER NOT NULL DEFAULT 1` and `last_modified_date TEXT`.
  */
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export const SCHEMA_V1_DDL = `
 CREATE TABLE IF NOT EXISTS connector_families (
@@ -125,6 +125,55 @@ CREATE INDEX IF NOT EXISTS idx_tooling_compat_family ON tooling_compatibility(co
 CREATE INDEX IF NOT EXISTS idx_revision_log_part ON part_revision_log(part_number, part_type);
 `;
 
+export const SCHEMA_V2_DDL = `
+CREATE TABLE IF NOT EXISTS suppliers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  contact_info TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Unit cost storage decision (T18 trap / D2 / T21):
+-- unit_cost is stored as REAL (floating-point) to accommodate fractional unit costs (e.g. bulk wire
+-- at $0.034/m or high-volume stamped contacts at $0.0125/ea). T21 BOM release snapshot calculations
+-- round aggregate line totals and order totals exact to the cent at calculation boundaries.
+CREATE TABLE IF NOT EXISTS part_sourcing (
+  part_number TEXT NOT NULL,
+  part_type TEXT NOT NULL,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  supplier_part_number TEXT,
+  unit_cost REAL,
+  currency TEXT,
+  moq INTEGER,
+  lead_time_days INTEGER,
+  stock_status TEXT,
+  distributor_url TEXT,
+  preferred INTEGER NOT NULL DEFAULT 0,
+  last_checked_date TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (part_number, part_type, supplier_id)
+);
+
+CREATE TABLE IF NOT EXISTS price_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  part_number TEXT NOT NULL,
+  part_type TEXT NOT NULL,
+  supplier_id INTEGER NOT NULL,
+  unit_cost REAL NOT NULL,
+  currency TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  FOREIGN KEY (part_number, part_type, supplier_id) REFERENCES part_sourcing(part_number, part_type, supplier_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);
+CREATE INDEX IF NOT EXISTS idx_part_sourcing_supplier ON part_sourcing(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_part_sourcing_part ON part_sourcing(part_number, part_type);
+CREATE INDEX IF NOT EXISTS idx_price_history_sourcing ON price_history(part_number, part_type, supplier_id);
+CREATE INDEX IF NOT EXISTS idx_price_history_recorded ON price_history(recorded_at);
+`;
+
 export const ALL_TABLE_NAMES = [
   'connector_families',
   'connectors',
@@ -136,4 +185,7 @@ export const ALL_TABLE_NAMES = [
   'tooling',
   'tooling_compatibility',
   'part_revision_log',
+  'suppliers',
+  'part_sourcing',
+  'price_history',
 ] as const;

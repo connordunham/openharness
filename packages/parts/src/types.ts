@@ -24,6 +24,13 @@ export type PartType =
 
 export type SpoolLengthDisplayUnit = 'ft' | 'm' | 'in' | 'cm';
 
+export type FieldType = 'string' | 'number' | 'boolean' | 'date';
+
+export interface FieldSpec {
+  name: string;
+  type: FieldType;
+}
+
 // ---------------------------------------------------------------------------
 // Connector Families
 // ---------------------------------------------------------------------------
@@ -49,6 +56,7 @@ export interface ConnectorFamilyInput {
   datasheet_url?: string | null;
   version?: number;
   last_modified_date?: string;
+  changed_by?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +100,7 @@ export interface ConnectorPartInput {
   image_ref?: string | null;
   version?: number;
   last_modified_date?: string;
+  changed_by?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +154,7 @@ export interface ContactPartInput {
   cavity_seal_part_id?: string | null;
   version?: number;
   last_modified_date?: string;
+  changed_by?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +176,7 @@ export interface BackshellPartInput {
   description?: string | null;
   version?: number;
   last_modified_date?: string;
+  changed_by?: string | null;
 }
 
 export interface BackshellCompatibility {
@@ -200,6 +211,7 @@ export interface WireSpecPartInput {
   spool_length_display_unit?: SpoolLengthDisplayUnit | null;
   version?: number;
   last_modified_date?: string;
+  changed_by?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +237,7 @@ export interface ToolingPartInput {
   last_calibration_date?: string | null;
   version?: number;
   last_modified_date?: string;
+  changed_by?: string | null;
 }
 
 export interface ToolingCompatibility {
@@ -258,3 +271,70 @@ export interface PartRevisionLogInput {
   changed_date?: string;
   changed_by?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Sourcing & Procurement (T18)
+// ---------------------------------------------------------------------------
+
+export type SourcingCurrency = 'USD' | 'CAD';
+
+export interface Supplier {
+  id: number;
+  name: string;
+  contact_info?: string | null;
+  created_at: string; // ISO-8601
+  updated_at: string; // ISO-8601
+}
+
+export interface SupplierInput {
+  name: string;
+  contact_info?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PartSourcing {
+  part_number: string;
+  part_type: PartType;
+  supplier_id: number;
+  supplier_part_number?: string | null;
+  unit_cost?: number | null;
+  currency?: SourcingCurrency | null;
+  moq?: number | null;
+  lead_time_days?: number | null;
+  stock_status?: string | null;
+  distributor_url?: string | null;
+  preferred: boolean;
+  last_checked_date?: string | null; // ISO-8601
+  created_at: string; // ISO-8601
+  updated_at: string; // ISO-8601
+}
+
+export interface PartSourcingInput {
+  part_number: string;
+  part_type: PartType;
+  supplier_id: number;
+  supplier_part_number?: string | null;
+  unit_cost?: number | null;
+  currency?: SourcingCurrency | null;
+  moq?: number | null;
+  lead_time_days?: number | null;
+  stock_status?: string | null;
+  distributor_url?: string | null;
+  preferred?: boolean;
+  last_checked_date?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PriceHistoryEntry {
+  id: number;
+  part_number: string;
+  part_type: PartType;
+  supplier_id: number;
+  unit_cost: number;
+  currency: SourcingCurrency;
+  recorded_at: string; // ISO-8601
+}
+
+

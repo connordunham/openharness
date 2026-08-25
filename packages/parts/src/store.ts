@@ -25,9 +25,13 @@ import type {
   ToolingPart,
   ToolingPartInput,
   PartRevisionLogEntry,
-  PartRevisionLogInput,
   PartType,
   SpoolLengthDisplayUnit,
+  Supplier,
+  SupplierInput,
+  PartSourcing,
+  PartSourcingInput,
+  PriceHistoryEntry,
 } from './types.js';
 import type { Gauge, GaugeUnit } from '@openharness/core';
 
@@ -71,12 +75,16 @@ export class PartsDatabase {
     return accessors.listConnectorFamilies(this.db);
   }
 
-  updateConnectorFamily(id: number, input: Partial<ConnectorFamilyInput>): ConnectorFamily {
-    return accessors.updateConnectorFamily(this.db, id, input);
+  updateConnectorFamily(
+    id: number,
+    input: Partial<ConnectorFamilyInput>,
+    changedBy?: string | null,
+  ): ConnectorFamily {
+    return accessors.updateConnectorFamily(this.db, id, input, changedBy);
   }
 
-  deleteConnectorFamily(id: number): boolean {
-    return accessors.deleteConnectorFamily(this.db, id);
+  deleteConnectorFamily(id: number, changedBy?: string | null): boolean {
+    return accessors.deleteConnectorFamily(this.db, id, changedBy);
   }
 
   // -------------------------------------------------------------------------
@@ -99,12 +107,16 @@ export class PartsDatabase {
     return accessors.listConnectors(this.db, filter);
   }
 
-  updateConnector(idOrPartNumber: number | string, input: Partial<ConnectorPartInput>): ConnectorPart {
-    return accessors.updateConnector(this.db, idOrPartNumber, input);
+  updateConnector(
+    idOrPartNumber: number | string,
+    input: Partial<ConnectorPartInput>,
+    changedBy?: string | null,
+  ): ConnectorPart {
+    return accessors.updateConnector(this.db, idOrPartNumber, input, changedBy);
   }
 
-  deleteConnector(idOrPartNumber: number | string): boolean {
-    return accessors.deleteConnector(this.db, idOrPartNumber);
+  deleteConnector(idOrPartNumber: number | string, changedBy?: string | null): boolean {
+    return accessors.deleteConnector(this.db, idOrPartNumber, changedBy);
   }
 
   // -------------------------------------------------------------------------
@@ -147,12 +159,16 @@ export class PartsDatabase {
     return accessors.listContacts(this.db);
   }
 
-  updateContact(idOrPartNumber: number | string, input: Partial<ContactPartInput>): ContactPart {
-    return accessors.updateContact(this.db, idOrPartNumber, input);
+  updateContact(
+    idOrPartNumber: number | string,
+    input: Partial<ContactPartInput>,
+    changedBy?: string | null,
+  ): ContactPart {
+    return accessors.updateContact(this.db, idOrPartNumber, input, changedBy);
   }
 
-  deleteContact(idOrPartNumber: number | string): boolean {
-    return accessors.deleteContact(this.db, idOrPartNumber);
+  deleteContact(idOrPartNumber: number | string, changedBy?: string | null): boolean {
+    return accessors.deleteContact(this.db, idOrPartNumber, changedBy);
   }
 
   // -------------------------------------------------------------------------
@@ -175,12 +191,16 @@ export class PartsDatabase {
     return accessors.listBackshells(this.db);
   }
 
-  updateBackshell(idOrPartNumber: number | string, input: Partial<BackshellPartInput>): BackshellPart {
-    return accessors.updateBackshell(this.db, idOrPartNumber, input);
+  updateBackshell(
+    idOrPartNumber: number | string,
+    input: Partial<BackshellPartInput>,
+    changedBy?: string | null,
+  ): BackshellPart {
+    return accessors.updateBackshell(this.db, idOrPartNumber, input, changedBy);
   }
 
-  deleteBackshell(idOrPartNumber: number | string): boolean {
-    return accessors.deleteBackshell(this.db, idOrPartNumber);
+  deleteBackshell(idOrPartNumber: number | string, changedBy?: string | null): boolean {
+    return accessors.deleteBackshell(this.db, idOrPartNumber, changedBy);
   }
 
   setBackshellCompatibility(backshellId: number, familyIds: number[]): void {
@@ -215,12 +235,16 @@ export class PartsDatabase {
     return accessors.listWireSpecs(this.db);
   }
 
-  updateWireSpec(idOrPartNumber: number | string, input: Partial<WireSpecPartInput>): WireSpecPart {
-    return accessors.updateWireSpec(this.db, idOrPartNumber, input);
+  updateWireSpec(
+    idOrPartNumber: number | string,
+    input: Partial<WireSpecPartInput>,
+    changedBy?: string | null,
+  ): WireSpecPart {
+    return accessors.updateWireSpec(this.db, idOrPartNumber, input, changedBy);
   }
 
-  deleteWireSpec(idOrPartNumber: number | string): boolean {
-    return accessors.deleteWireSpec(this.db, idOrPartNumber);
+  deleteWireSpec(idOrPartNumber: number | string, changedBy?: string | null): boolean {
+    return accessors.deleteWireSpec(this.db, idOrPartNumber, changedBy);
   }
 
   // -------------------------------------------------------------------------
@@ -243,12 +267,16 @@ export class PartsDatabase {
     return accessors.listTooling(this.db);
   }
 
-  updateTooling(idOrPartNumber: number | string, input: Partial<ToolingPartInput>): ToolingPart {
-    return accessors.updateTooling(this.db, idOrPartNumber, input);
+  updateTooling(
+    idOrPartNumber: number | string,
+    input: Partial<ToolingPartInput>,
+    changedBy?: string | null,
+  ): ToolingPart {
+    return accessors.updateTooling(this.db, idOrPartNumber, input, changedBy);
   }
 
-  deleteTooling(idOrPartNumber: number | string): boolean {
-    return accessors.deleteTooling(this.db, idOrPartNumber);
+  deleteTooling(idOrPartNumber: number | string, changedBy?: string | null): boolean {
+    return accessors.deleteTooling(this.db, idOrPartNumber, changedBy);
   }
 
   setToolingCompatibility(toolingId: number, familyIds: number[]): void {
@@ -267,20 +295,114 @@ export class PartsDatabase {
   // Part Revision Log
   // -------------------------------------------------------------------------
 
-  logPartRevision(input: PartRevisionLogInput): PartRevisionLogEntry {
-    return accessors.logPartRevision(this.db, input);
-  }
-
-  logPartRevisions(inputs: PartRevisionLogInput[]): PartRevisionLogEntry[] {
-    return accessors.logPartRevisions(this.db, inputs);
-  }
-
   getPartRevisionLogs(partNumber: string, partType?: PartType): PartRevisionLogEntry[] {
     return accessors.getPartRevisionLogs(this.db, partNumber, partType);
   }
 
   listAllRevisionLogs(): PartRevisionLogEntry[] {
     return accessors.listAllRevisionLogs(this.db);
+  }
+
+  replayPartRevisions<T extends { version: number }>(
+    currentPart: T,
+    partType: PartType,
+    logs: PartRevisionLogEntry[],
+    targetVersion: number,
+  ): T {
+    return accessors.replayPartRevisions(currentPart, partType, logs, targetVersion);
+  }
+
+  // -------------------------------------------------------------------------
+  // Suppliers (T18)
+  // -------------------------------------------------------------------------
+
+  createSupplier(input: SupplierInput): Supplier {
+    return accessors.createSupplier(this.db, input);
+  }
+
+  getSupplier(id: number): Supplier | null {
+    return accessors.getSupplier(this.db, id);
+  }
+
+  getSupplierByName(name: string): Supplier | null {
+    return accessors.getSupplierByName(this.db, name);
+  }
+
+  listSuppliers(): Supplier[] {
+    return accessors.listSuppliers(this.db);
+  }
+
+  updateSupplier(id: number, input: Partial<SupplierInput>): Supplier {
+    return accessors.updateSupplier(this.db, id, input);
+  }
+
+  deleteSupplier(id: number): boolean {
+    return accessors.deleteSupplier(this.db, id);
+  }
+
+  // -------------------------------------------------------------------------
+  // Part Sourcing (T18)
+  // -------------------------------------------------------------------------
+
+  createPartSourcing(input: PartSourcingInput): PartSourcing {
+    return accessors.createPartSourcing(this.db, input);
+  }
+
+  getPartSourcing(partNumber: string, partType: PartType, supplierId: number): PartSourcing | null {
+    return accessors.getPartSourcing(this.db, partNumber, partType, supplierId);
+  }
+
+  listPartSourcingForPart(partNumber: string, partType?: PartType): PartSourcing[] {
+    return accessors.listPartSourcingForPart(this.db, partNumber, partType);
+  }
+
+  listPartSourcingForSupplier(supplierId: number): PartSourcing[] {
+    return accessors.listPartSourcingForSupplier(this.db, supplierId);
+  }
+
+  listAllPartSourcing(): PartSourcing[] {
+    return accessors.listAllPartSourcing(this.db);
+  }
+
+  getPreferredSourcing(partNumber: string, partType?: PartType): PartSourcing | null {
+    return accessors.getPreferredSourcing(this.db, partNumber, partType);
+  }
+
+  updatePartSourcing(
+    partNumber: string,
+    partType: PartType,
+    supplierId: number,
+    input: Partial<PartSourcingInput>,
+  ): PartSourcing {
+    return accessors.updatePartSourcing(this.db, partNumber, partType, supplierId, input);
+  }
+
+  setPreferredSupplier(
+    partNumber: string,
+    partType: PartType,
+    supplierId: number,
+  ): PartSourcing {
+    return accessors.setPreferredSupplier(this.db, partNumber, partType, supplierId);
+  }
+
+  deletePartSourcing(partNumber: string, partType: PartType, supplierId: number): boolean {
+    return accessors.deletePartSourcing(this.db, partNumber, partType, supplierId);
+  }
+
+  // -------------------------------------------------------------------------
+  // Price History (T18)
+  // -------------------------------------------------------------------------
+
+  getPriceHistory(
+    partNumber: string,
+    partType?: PartType,
+    supplierId?: number,
+  ): PriceHistoryEntry[] {
+    return accessors.getPriceHistory(this.db, partNumber, partType, supplierId);
+  }
+
+  listAllPriceHistory(): PriceHistoryEntry[] {
+    return accessors.listAllPriceHistory(this.db);
   }
 
   // -------------------------------------------------------------------------

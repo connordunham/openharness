@@ -6,7 +6,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { CURRENT_SCHEMA_VERSION, SCHEMA_V1_DDL } from './schema.js';
+import { CURRENT_SCHEMA_VERSION, SCHEMA_V1_DDL, SCHEMA_V2_DDL } from './schema.js';
 
 export interface Migration {
   version: number;
@@ -20,6 +20,13 @@ export const MIGRATIONS: Migration[] = [
     description: 'Initial schema: master parts tables and revision log',
     up: (db: Database.Database) => {
       db.exec(SCHEMA_V1_DDL);
+    },
+  },
+  {
+    version: 2,
+    description: 'Procurement: suppliers, part_sourcing, and price_history tables',
+    up: (db: Database.Database) => {
+      db.exec(SCHEMA_V2_DDL);
     },
   },
 ];

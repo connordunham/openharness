@@ -306,7 +306,7 @@ describe('@openharness/parts — Parts Database Store', () => {
 
     expect(() => {
       runMigrations(rawDb);
-    }).toThrow('Database schema version 99 is newer than supported version 1');
+    }).toThrow(`Database schema version 99 is newer than supported version ${CURRENT_SCHEMA_VERSION}`);
     rawDb.close();
   });
 
@@ -336,22 +336,15 @@ describe('@openharness/parts — Parts Database Store', () => {
         version: 1,
       });
 
-      // Update connector and log changes
-      db.updateConnector('CONN-REV-TEST', {
-        temp_max: 125,
-        version: 2,
-      });
-
-      db.logPartRevision({
-        part_number: 'CONN-REV-TEST',
-        part_type: 'connector',
-        version: 2,
-        field_name: 'temp_max',
-        old_value: '105',
-        new_value: '125',
-        changed_date: '2026-08-24T15:00:00.000Z',
-        changed_by: 'cdunham',
-      });
+      // Update connector — revision is logged automatically
+      db.updateConnector(
+        'CONN-REV-TEST',
+        {
+          temp_max: 125,
+          last_modified_date: '2026-08-24T15:00:00.000Z',
+        },
+        'cdunham',
+      );
 
       const logs = db.getPartRevisionLogs('CONN-REV-TEST');
       expect(logs).toHaveLength(1);

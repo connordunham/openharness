@@ -112,8 +112,8 @@ would otherwise invent its own, differently wrong, version.
 | T14 | Current capacity with bundle derating | L | not started |
 | T15 | Bend radius | M | not started |
 | T16 | Parts library store (SQLite) | XL | implemented — SQLite master parts library (@openharness/parts) with forward migration runner, canonical units, join-table compatibility, ISO-8601 timestamps, native module packaging rebuild verified via packaged Electron build; 14 tests (536 total), all four gates green |
-| T17 | Part versioning and revision log | M | not started |
-| T18 | Suppliers, sourcing and price history | M | not started |
+| T17 | Part versioning and revision log | M | implemented — field-level part versioning and revision logging in @openharness/parts; single transaction per update/delete with atomic version bumps, float/type-aware diffing, no-op save suppression, round-tripping stringification, revision replay helper with part/type filtering & gap validation, and __deleted__ logging on deletion; 21 new tests (557 total), all four gates green |
+| T18 | Suppliers, sourcing and price history | M | implemented — suppliers, part_sourcing, and price_history tables with schema v2 migration in @openharness/parts; atomic preferred supplier clearing, closed-set currency (USD/CAD) and part_type validation, unrounded REAL unit_cost storage for fractional pricing, audit trail recording in price_history on price/currency change, nullable MOQ and lead times, and cascading deletion on supplier removal; 14 new tests (571 total), all four gates green |
 | T19 | Part-number resolution between stores | M | not started |
 | T20 | Scrap buffer and spool quantity | M | not started |
 | T21 | Released BOM snapshot | L | not started |
