@@ -12,7 +12,7 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "prebuild": "tsc -b ../core ../render ../io",
+    "prebuild": "tsc -b ../core ../parts ../render ../io",
     "build": "npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
     "dev": "concurrently -k -n renderer,electron -c blue,green \"npm run dev:renderer\" \"npm run build:electron -- --watch --preserveWatchOutput\" ",
@@ -25,6 +25,7 @@
   "dependencies": {
     "@openharness/core": "*",
     "@openharness/io": "*",
+    "@openharness/parts": "*",
     "@openharness/render": "*",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

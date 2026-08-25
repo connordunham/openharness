@@ -111,7 +111,7 @@ would otherwise invent its own, differently wrong, version.
 | T13 | Automation surface | L | not started |
 | T14 | Current capacity with bundle derating | L | not started |
 | T15 | Bend radius | M | not started |
-| T16 | Parts library store (SQLite) | XL | not started |
+| T16 | Parts library store (SQLite) | XL | implemented — SQLite master parts library (@openharness/parts) with forward migration runner, canonical units, join-table compatibility, ISO-8601 timestamps, native module packaging rebuild verified via packaged Electron build; 14 tests (536 total), all four gates green |
 | T17 | Part versioning and revision log | M | not started |
 | T18 | Suppliers, sourcing and price history | M | not started |
 | T19 | Part-number resolution between stores | M | not started |

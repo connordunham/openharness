@@ -1,21 +1,20 @@
 {
-  "name": "openharness",
+  "name": "@openharness/parts",
   "version": "0.0.1",
-  "description": "Headless CLI: validate, export, run automations, query, import, diff, doctor (spec §8.6).",
+  "description": "SQLite-backed master parts library and schema (spec DATA-LAYER-SPEC.md).",
   "type": "module",
   "main": "./dist/index.js",
-  "bin": { "openharness": "./dist/cli.js" },
+  "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
     "test": "vitest run"
   },
   "dependencies": {
     "@openharness/core": "*",
-    "@openharness/parts": "*",
-    "@openharness/io": "*",
-    "@openharness/automation": "*"
+    "better-sqlite3": "^11.8.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }
