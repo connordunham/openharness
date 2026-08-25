@@ -13,7 +13,7 @@
  *    for it under the app package and gives up with "Cannot compute electron
  *    version from installed node modules". Resolving it through require()
  *    finds the hoisted copy and keeps this file from drifting out of step with
- *    the devDependency — which is why this is a .cjs config and not the
+ *    the devDependency -- which is why this is a .cjs config and not the
  *    friendlier .yml.
  *
  * 2. Production dependencies (including @openharness/parts and its transitive
@@ -25,10 +25,19 @@
  *    (Vite output), the main process, and production dependencies.
  *
  * 3. Native modules (better-sqlite3) must be rebuilt against Electron's Node
- *    ABI during packaging. `npmRebuild: true` and `buildDependenciesFromSource:
- *    true` enable this. `asarUnpack` unpacks only compiled binaries outside the
- *    asar archive; the JS and other sources load fine from inside it, keeping
- *    the installer small.
+ *    ABI before packaging, but NOT via electron-builder's own `npmRebuild`
+ *    option. That option runs its own scoped "install production
+ *    dependencies" pass for this package (packages/app) before packaging --
+ *    in this npm-workspaces layout that pass prunes hoisted root
+ *    node_modules packages electron-builder itself still needs later in the
+ *    same run (electron, 7zip-bin), and packaging then fails partway through
+ *    with ENOENT. Instead, `npm run package:*` runs
+ *    `scripts/rebuild-native.mjs` first, which rebuilds better-sqlite3 in
+ *    place via @electron/rebuild without touching anything else in
+ *    node_modules. `npmRebuild` is disabled here accordingly.
+ *    `asarUnpack` unpacks only compiled binaries outside the asar archive;
+ *    the JS and other sources load fine from inside it, keeping the
+ *    installer small.
  */
 
 const electronVersion = require('electron/package.json').version;
@@ -38,6 +47,14 @@ module.exports = {
   productName: 'OpenHarness',
   copyright: 'Copyright (c) 2026 OpenHarness contributors',
   electronVersion,
+
+  // This app has no auto-updater wired up, and releases are uploaded to
+  // GitHub Releases by a separate CI step (softprops/action-gh-release), not
+  // by electron-builder's own publish mechanism. Without this, electron-builder
+  // still tries to generate auto-update metadata for AppImage/deb and can
+  // crash (`Cannot read properties of null (reading 'channel')`) when it
+  // can't resolve a publish target -- disable that machinery outright.
+  publish: null,
 
   directories: {
     output: '../../release',
@@ -59,10 +76,10 @@ module.exports = {
     '**/*.node',
   ],
 
-  // Native modules (better-sqlite3) must be rebuilt against Electron's Node ABI.
-  npmRebuild: true,
-  nodeGypRebuild: false,
-  buildDependenciesFromSource: true,
+  // Native modules are rebuilt ahead of time by scripts/rebuild-native.mjs
+  // (see the file header above for why electron-builder's own npmRebuild
+  // step can't be used in this workspace layout).
+  npmRebuild: false,
 
   fileAssociations: [
     {

@@ -10,10 +10,11 @@
   "scripts": {
     "prepare": "node scripts/prepare.mjs",
     "build": "tsc -b && npm run build --workspaces --if-present",
-    "package": "npm run build && npm run package --workspace @openharness/app",
-    "package:win": "npm run build && npm run package:win --workspace @openharness/app",
-    "package:linux": "npm run build && npm run package:linux --workspace @openharness/app",
-    "package:mac": "npm run build && npm run package:mac --workspace @openharness/app",
+    "package": "node scripts/package.mjs",
+    "package:win": "node scripts/package.mjs win",
+    "package:linux": "node scripts/package.mjs linux",
+    "package:mac": "node scripts/package.mjs mac",
+    "restore-native": "npm rebuild better-sqlite3 --workspace @openharness/parts",
     "start": "npm start --workspace @openharness/app",
     "dev": "npm run dev --workspace @openharness/app",
     "typecheck": "tsc -b",
@@ -25,6 +26,7 @@
     "doctor": "node scripts/doctor.mjs"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0",
     "@types/node": "^20.0.0",
