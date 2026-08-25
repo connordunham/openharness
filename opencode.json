@@ -12,7 +12,8 @@
     "reviewer":       { "model": "openrouter/qwen/qwen3.8-27b" },
     "verifier":       { "model": "openrouter/anthropic/claude-haiku-4.5" },
     "domain-auditor": { "model": "openrouter/moonshotai/kimi-k3" },
-    "maintainer":     { "model": "openrouter/anthropic/claude-haiku-4.5" }
+    "maintainer":     { "model": "openrouter/anthropic/claude-haiku-4.5" },
+    "security":       { "model": "openrouter/moonshotai/kimi-k3" }
   },
 
   "provider": {
