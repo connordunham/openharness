@@ -3,46 +3,61 @@
 Ordered work, one packet per file. Each is self-contained — read
 `docs/HANDOFF.md` once, then only the packet you are doing.
 
-## Current priority — updated 2026-08-25
+## Current priority -- updated 2026-08-25 (revised same day, per Connor)
 
-**T16-T18 have landed. T19 and T20 are next (either order — both only need
-T16, which is done); then T21, then T22.** This is a project-owner decision,
-not a derivation from the dependency graph. Do not re-derive an order from the
-graph below and start something else.
+**Reprioritized: the previously-postponed independent track (`T05` onward) is
+next, starting with `T05`. The data-layer packets `T19`/`T20`/`T21`/`T22` are
+paused, not dropped -- resume them after this track or when Connor says so.**
+This is a project-owner decision, not a derivation from the dependency graph.
+Do not re-derive an order from the graph below and start something else.
 
 ```
-  finish first ──> Phase 2a / Phase 2b running-app check
+  finish first --> Phase 2a / Phase 2b running-app check
                    (both are implemented, reviewed, and gated green; the one
                    thing not yet done is actually opening the app and looking
                    at bundle rendering and connector rotation on the Layout
-                   canvas — land that before opening new work)
+                   canvas -- land that before opening new work, whichever
+                   track that new work is)
 
-  done ──────────> T16  parts store            XL   done
-                    T17  versioning             M    done
-                    T18  sourcing               M    done
+  then, in order -> T05  schematic ergonomics   M    <- start here
+                    T06  view toggles           M    (independent)
+                    T08  groups                 M    (independent)
+                    T07  search + destinations  L    (needs T06)
+                    T09  PDF export             L
+                    T10  XLSX wiring table      M    (needs T09)
+                    T12  formboard              XL   (needs T04, done)
+                    T13  automation surface     L    (last on purpose --
+                                                       API should stop
+                                                       moving first)
 
-  then, in order ─> T19  resolution             M    (needs T16 + T18, both done)
+  pull-forward
+  candidates -----> T14  current capacity       L  the two rules the resident
+                    T15  bend radius            M  engineer named as highest
+                                                    value; T15 needs nothing,
+                                                    T14 needs only T01 (done);
+                                                    either can be slotted in
+                                                    anywhere above
+
+  paused,
+  not dropped ----> T19  resolution             M    (needs T16 + T18, both done)
                     T20  buffer / spools        M    (needs T16, done)
-
-  after that ─────> T21  BOM release            L    (needs T18, T19, T20)
+                    T21  BOM release            L    (needs T18, T19, T20)
                     T22  tooling checklist      M    (needs T16, T19)
-                    T14  current capacity       L  ┐ the two rules the resident
-                    T15  bend radius            M  ┘ engineer named as highest
-                                                     value; deferred, not dropped
 ```
 
 `T02` and `T04` are fully closed, running-app checks included. `Phase 2a` and
-`Phase 2b` are now sitting exactly where `T02`/`T04` used to sit: finished code,
-all four gates green, waiting on the one check that actually catches a
-rendering bug. Leaving that undone while starting `T19`/`T20` is the same
-mistake this note used to warn about.
+`Phase 2b` are not -- land that check first regardless of which track opens
+next; it is the same category of loose end `T02`/`T04` used to represent.
 
-`T16` shipped as planned: a packaged build opens a library, and the
-native-module rebuild is verified against Electron's ABI on every package run
-(`scripts/rebuild-native.mjs`) rather than trusted on exit code alone.
+Data-layer status for reference, unchanged by this reprioritization: `T16`-
+`T18` shipped and are independently verified (a packaged build opens a
+library; native-module rebuild is checked against Electron's ABI on every
+package run via `scripts/rebuild-native.mjs`). `T19`-`T22` are fully specified
+and ready to resume the moment this track is done or Connor calls an audible.
 
-Everything in `T05`–`T13` is parked until the data-layer track above is
-through. `T14` and `T15` are parked too — see the note below.
+`T05`-`T13`'s previous direction -- parked until the data layer clears -- is
+superseded by this update. `T14` and `T15` remain deferred-but-pullable, as
+before.
 
 ## Order and dependencies
 
