@@ -103,7 +103,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
-import type { HarnessStore, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
+import type { HarnessStore, HarnessDocument, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
 import {
   newInstanceId, computeDerivedModel, endpointComponentId, computeRouteAvoidingBundle,
   DEFAULT_BUNDLE_COLOR,
@@ -112,6 +112,7 @@ import {
   pointRect, emitBundleGeometry, pointAtFraction,
   bundlePolyline, computeNodeAutoAngles, nodeFacingAngle,
   branchOutlinePoint, glyphBodyHalfLen, GLYPH_STUB_LEN, normalizeRotationDegrees,
+  canvasToScreen, layoutComponentCardPosition,
   type SceneBundle,
 } from '@openharness/render';
 import { theme } from './theme.js';
@@ -1614,47 +1615,16 @@ export function LayoutCanvas({
             </svg>
 
             {selectedComponent && selectedComponent.layoutPosition && (
-              <div style={{ position: 'absolute', left: toPx(selectedComponent.layoutPosition).x - 30, top: toPx(selectedComponent.layoutPosition).y + HOVER_R + 22, zIndex: 2 }}>
-                <div style={s.card}>
-                  <div style={s.cardHeader}>
-                    <ComponentIcon type={selectedComponent.type} {...connectorAppearance(selectedComponent, doc)} />
-                    <span style={s.cardTitle}>{selectedComponent.refdes}</span>
-                  </div>
-                  <div style={s.cardBody}>
-                    <div style={s.kvRow}><span style={s.kvKey}>x (mm)</span><span style={s.kvVal}>{selectedComponent.layoutPosition.x.toFixed(1)}</span></div>
-                    <div style={s.kvRow}><span style={s.kvKey}>y (mm)</span><span style={s.kvVal}>{selectedComponent.layoutPosition.y.toFixed(1)}</span></div>
-                    {selectedComponent.type === 'connector' && (
-                      <div style={s.kvRow}>
-                        <span style={s.kvKey}>Rotation</span>
-                        <span style={s.kvVal}>{connectorRotation.getRotation(selectedComponent.id)}°</span>
-                      </div>
-                    )}
-                    {shieldedGroupsAt(store, selectedComponent.id).map((g) => (
-                      <div key={g.id} style={s.shieldSection}>
-                        <div style={s.sectionLabel}>{g.refdes ? `Shield ${g.refdes} termination` : 'Shield termination'}</div>
-                        <label style={s.fieldLabel}>Style</label>
-                        <select
-                          style={s.input} value={g.shield?.termination?.style ?? ''}
-                          onChange={(e) => {
-                            const v = e.target.value as ShieldTermination['style'];
-                            updateShieldTermination(store, g.id, (t) => { t.style = v || undefined; });
-                          }}
-                        >
-                          <option value="">(unspecified)</option>
-                          {SHIELD_TERMINATION_STYLES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                        </select>
-                        <label style={s.fieldLabel}>Note</label>
-                        <input
-                          style={s.input} value={g.shield?.termination?.note ?? ''}
-                          placeholder="e.g. terminates at backshell, 360° clamp"
-                          onChange={(e) => { const v = e.target.value; updateShieldTermination(store, g.id, (t) => { t.note = v || undefined; }); }}
-                        />
-                      </div>
-                    ))}
-                    <button style={s.dangerBtn} onClick={() => unplaceComponent(selectedComponent.id)}>Remove from layout</button>
-                  </div>
-                </div>
-              </div>
+              <LayoutComponentCard
+                component={selectedComponent}
+                doc={doc}
+                store={store}
+                scale={scale}
+                panX={panX}
+                panY={panY}
+                rotationDeg={selectedComponent.type === 'connector' ? connectorRotation.getRotation(selectedComponent.id) : undefined}
+                onUnplace={unplaceComponent}
+              />
             )}
 
             {selectedBundle && (
@@ -1662,6 +1632,9 @@ export function LayoutCanvas({
                 bundle={selectedBundle}
                 scene={selectedScene}
                 wires={selectedBundleWires}
+                scale={scale}
+                panX={panX}
+                panY={panY}
                 canExtractWire={(wireId) => extractableWires.get(wireId) === true}
                 onSetLength={(mm) => setBundleLength(selectedBundle.id, mm)}
                 onSetSegmentLength={(i, mm) => setSegmentLength(selectedBundle.id, i, mm)}
@@ -1706,10 +1679,84 @@ export function LayoutCanvas({
   );
 }
 
+export interface LayoutComponentCardProps {
+  component: Component;
+  doc: HarnessDocument;
+  store: HarnessStore;
+  scale?: number;
+  panX?: number;
+  panY?: number;
+  rotationDeg?: number;
+  onUnplace?: (componentId: string) => void;
+}
+
+export function LayoutComponentCard({
+  component,
+  doc,
+  store,
+  scale = 1,
+  panX = 0,
+  panY = 0,
+  rotationDeg,
+  onUnplace,
+}: LayoutComponentCardProps) {
+  if (!component.layoutPosition) return null;
+  const pt = toPx(component.layoutPosition);
+  const { left, top } = layoutComponentCardPosition(pt, scale, panX, panY, HOVER_R, 22);
+  const rotation = rotationDeg ?? (component.rotation !== undefined ? normalizeRotationDegrees(component.rotation) : 0);
+
+  return (
+    <div style={{ position: 'absolute', left, top, zIndex: 2 }}>
+      <div style={s.card}>
+        <div style={s.cardHeader}>
+          <ComponentIcon type={component.type} {...connectorAppearance(component, doc)} />
+          <span style={s.cardTitle}>{component.refdes}</span>
+        </div>
+        <div style={s.cardBody}>
+          <div style={s.kvRow}><span style={s.kvKey}>x (mm)</span><span style={s.kvVal}>{component.layoutPosition.x.toFixed(1)}</span></div>
+          <div style={s.kvRow}><span style={s.kvKey}>y (mm)</span><span style={s.kvVal}>{component.layoutPosition.y.toFixed(1)}</span></div>
+          {component.type === 'connector' && (
+            <div style={s.kvRow}>
+              <span style={s.kvKey}>Rotation</span>
+              <span style={s.kvVal}>{rotation}°</span>
+            </div>
+          )}
+          {shieldedGroupsAt(store, component.id).map((g) => (
+            <div key={g.id} style={s.shieldSection}>
+              <div style={s.sectionLabel}>{g.refdes ? `Shield ${g.refdes} termination` : 'Shield termination'}</div>
+              <label style={s.fieldLabel}>Style</label>
+              <select
+                style={s.input} value={g.shield?.termination?.style ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value as ShieldTermination['style'];
+                  updateShieldTermination(store, g.id, (t) => { t.style = v || undefined; });
+                }}
+              >
+                <option value="">(unspecified)</option>
+                {SHIELD_TERMINATION_STYLES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <label style={s.fieldLabel}>Note</label>
+              <input
+                style={s.input} value={g.shield?.termination?.note ?? ''}
+                placeholder="e.g. terminates at backshell, 360° clamp"
+                onChange={(e) => { const v = e.target.value; updateShieldTermination(store, g.id, (t) => { t.note = v || undefined; }); }}
+              />
+            </div>
+          ))}
+          {onUnplace && (
+            <button style={s.dangerBtn} onClick={() => onUnplace(component.id)}>Remove from layout</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function BundleInspector({
   bundle, scene, wires, canExtractWire,
   onSetLength, onSetSegmentLength, onSetColor, onSetLabel, onExtractWire,
   onDelete, onClearRoutingNodes, onClose,
+  scale = 1, panX = 0, panY = 0,
 }: {
   bundle: { id: string; refdes: string; length?: number; waypoints?: Point[]; segmentLengths?: (number | undefined)[]; color?: string; label?: string };
   /** Scene data (wire count, gauge range, derived diameter) — optional so the
@@ -1725,11 +1772,17 @@ export function BundleInspector({
   onDelete: () => void;
   onClearRoutingNodes: () => void;
   onClose: () => void;
+  scale?: number;
+  panX?: number;
+  panY?: number;
 }) {
   const nodeCount = bundle.waypoints?.length ?? 0;
   const segmentCount = nodeCount + 1;
+  const anchor = scene?.labelPosition ?? { x: 20, y: 20 };
+  const { x: screenX, y: screenY } = canvasToScreen(anchor.x, anchor.y, scale, panX, panY);
+  const top = screenY + 14;
   return (
-    <div style={{ position: 'absolute', left: 20, top: 20, zIndex: 3 }}>
+    <div style={{ position: 'absolute', left: screenX, top, zIndex: 3 }}>
       <div style={s.card}>
         <div style={s.cardHeader}>
           <span style={s.cardTitle}>{bundle.refdes}</span>

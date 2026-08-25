@@ -12,6 +12,7 @@ import {
   zoomAboutPoint,
   nextWheelZoom,
   zoomViewAboutCursor,
+  layoutComponentCardPosition,
   type Rect,
 } from '../zoomGeometry.js';
 
@@ -631,6 +632,55 @@ describe('zoomGeometry', () => {
         expect(r.scrollLeft).toBeGreaterThanOrEqual(0);
         expect(r.scrollTop).toBeGreaterThanOrEqual(0);
       }
+    });
+  });
+
+  describe('Overlay positioning at zoom', () => {
+    it('positions overlays at transformed anchor points across scales and pans', () => {
+      // Connector at canvas (100, 100), height 80
+      const node = { x: 100, y: 100, height: 80 };
+
+      // At 100% zoom, pan 0:
+      const s100 = canvasToScreen(node.x, node.y, 1, 0, 0);
+      expect(s100).toEqual({ x: 100, y: 100 });
+      // CavityStepper (screenY - 38)
+      expect(s100.y - 38).toBe(62);
+      // ComponentInspector (bottom + 10)
+      const b100 = canvasToScreen(node.x, node.y + node.height, 1, 0, 0);
+      expect(b100.y + 10).toBe(190);
+
+      // At 200% zoom, pan (50, 30):
+      const s200 = canvasToScreen(node.x, node.y, 2, 50, 30);
+      expect(s200).toEqual({ x: 250, y: 230 }); // 100*2 + 50 = 250, 100*2 + 30 = 230
+      // CavityStepper tracks connector top-left with fixed 38px screen offset
+      expect(s200.y - 38).toBe(192);
+      // ComponentInspector tracks connector bottom-left with fixed 10px screen offset
+      const b200 = canvasToScreen(node.x, node.y + node.height, 2, 50, 30);
+      expect(b200).toEqual({ x: 250, y: 390 }); // 180*2 + 30 = 390
+      expect(b200.y + 10).toBe(400);
+
+      // At 25% zoom, pan (0, 0):
+      const s25 = canvasToScreen(node.x, node.y, 0.25, 0, 0);
+      expect(s25).toEqual({ x: 25, y: 25 });
+      expect(s25.y - 38).toBe(-13);
+
+      // At 400% zoom, pan (100, 200):
+      const s400 = canvasToScreen(node.x, node.y, 4, 100, 200);
+      expect(s400).toEqual({ x: 500, y: 600 });
+      expect(s400.y - 38).toBe(562);
+    });
+
+    it('layoutComponentCardPosition positions card below scaled hover ring across zoom levels', () => {
+      const pt = { x: 100, y: 150 };
+      const HOVER_R = 24;
+      // At scale 1, pan (0, 0): screen (100, 150) -> left: 100 - 30 = 70, top: 150 + 24*1 + 22 = 196
+      expect(layoutComponentCardPosition(pt, 1, 0, 0, HOVER_R, 22)).toEqual({ left: 70, top: 196 });
+      // At scale 2, pan (50, 30): screen (250, 330) -> left: 250 - 30 = 220, top: 330 + 24*2 + 22 = 400
+      expect(layoutComponentCardPosition(pt, 2, 50, 30, HOVER_R, 22)).toEqual({ left: 220, top: 400 });
+      // At scale 0.5, pan (10, 20): screen (60, 95) -> left: 60 - 30 = 30, top: 95 + 24*0.5 + 22 = 129
+      expect(layoutComponentCardPosition(pt, 0.5, 10, 20, HOVER_R, 22)).toEqual({ left: 30, top: 129 });
+      // At scale 4, pan (0, 0): screen (400, 600) -> left: 400 - 30 = 370, top: 600 + 24*4 + 22 = 718
+      expect(layoutComponentCardPosition(pt, 4, 0, 0, HOVER_R, 22)).toEqual({ left: 370, top: 718 });
     });
   });
 });

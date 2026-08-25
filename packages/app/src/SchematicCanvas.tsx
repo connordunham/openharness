@@ -54,7 +54,7 @@ import {
 import {
   computeSchematicScene, collectGroupMembers, shieldTerminationMarks, twistCrossoverPaths,
   waypointInsertIndex, segmentIntersectsRect, type SceneNode, type SceneRow, type SceneWire,
-  ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas, exceedsDragThreshold,
+  ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas, exceedsDragThreshold, canvasToScreen,
   schematicContentRects, schematicSelectionRects, type SchematicSelectionItem,
 } from '@openharness/render';
 import { theme } from './theme.js';
@@ -1425,7 +1425,7 @@ export function SchematicCanvas({
         if (rep) { sx += rep.midpoint.x; sy += rep.midpoint.y; n++; }
       }
     }
-    if (n > 0) groupBtnPos = { x: sx / n, y: sy / n - 40 };
+    if (n > 0) groupBtnPos = { x: sx / n, y: sy / n };
   }
 
   /** How much of the current multi-selection each floating action applies
@@ -2206,18 +2206,21 @@ export function SchematicCanvas({
             })()}
           </svg>
 
-          {groupBtnPos && (
-            <div style={{ ...s.selectionActions, left: groupBtnPos.x - 44, top: groupBtnPos.y }}>
-              {selectionCounts.groupable >= 1 && (
-                <button style={s.groupActionBtn} onClick={groupSelection}>
-                  Group {selectionCounts.groupable}
+          {groupBtnPos && (() => {
+            const { x: screenX, y: screenY } = canvasToScreen(groupBtnPos.x, groupBtnPos.y, scale, panX, panY);
+            return (
+              <div style={{ ...s.selectionActions, left: screenX - 44, top: screenY - 40 }}>
+                {selectionCounts.groupable >= 1 && (
+                  <button style={s.groupActionBtn} onClick={groupSelection}>
+                    Group {selectionCounts.groupable}
+                  </button>
+                )}
+                <button style={s.deleteActionBtn} onClick={deleteMultiSelection}>
+                  Delete {selectionCounts.total}
                 </button>
-              )}
-              <button style={s.deleteActionBtn} onClick={deleteMultiSelection}>
-                Delete {selectionCounts.total}
-              </button>
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           {selectedComponent && selectedNode && (
             <>
@@ -2226,104 +2229,123 @@ export function SchematicCanvas({
                   store={store}
                   connector={selectedComponent}
                   node={selectedNode}
+                  scale={scale}
+                  panX={panX}
+                  panY={panY}
                 />
               )}
-              {inspectorOpen && (
-                <div style={{ position: 'absolute', left: selectedNode.x, top: selectedNode.y + selectedNode.height + 10, zIndex: 2 }}>
-                  <ComponentInspector
-                    store={store}
-                    component={selectedComponent}
-                    tab={inspectorTab}
-                    onTabChange={setInspectorTab}
-                    onDelete={deleteSelected}
-                    onClose={() => setInspectorOpen(false)}
-                  />
-                </div>
-              )}
+              {inspectorOpen && (() => {
+                const { x: screenX, y: screenY } = canvasToScreen(selectedNode.x, selectedNode.y + selectedNode.height, scale, panX, panY);
+                return (
+                  <div style={{ position: 'absolute', left: screenX, top: screenY + 10, zIndex: 2 }}>
+                    <ComponentInspector
+                      store={store}
+                      component={selectedComponent}
+                      tab={inspectorTab}
+                      onTabChange={setInspectorTab}
+                      onDelete={deleteSelected}
+                      onClose={() => setInspectorOpen(false)}
+                    />
+                  </div>
+                );
+              })()}
             </>
           )}
 
-          {selectedNote && selectedSceneNote && inspectorOpen && (
-            <div style={{ position: 'absolute', left: selectedSceneNote.point.x, top: selectedSceneNote.point.y + 64, zIndex: 2 }}>
-              <div style={s.card}>
-                <div style={s.cardHeader}>
-                  <ComponentIcon type="note" />
-                  <span style={s.cardTitle}>Note</span>
-                  <button style={s.closeBtn} onClick={() => setInspectorOpen(false)} title="Close">×</button>
-                </div>
-                <div style={s.cardBody}>
-                  <textarea
-                    style={s.textarea}
-                    value={selectedNote.text}
-                    autoFocus
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      store.transact('Edit note text', (draft) => {
-                        const n = draft.notes[selectedNote.id];
-                        if (n) n.text = value;
-                      });
-                    }}
-                  />
-                  <button style={s.deleteBtn} onClick={deleteSelected}>Delete</button>
+          {selectedNote && selectedSceneNote && inspectorOpen && (() => {
+            const { x: screenX, y: screenY } = canvasToScreen(selectedSceneNote.point.x, selectedSceneNote.point.y + 56, scale, panX, panY);
+            return (
+              <div style={{ position: 'absolute', left: screenX, top: screenY + 8, zIndex: 2 }}>
+                <div style={s.card}>
+                  <div style={s.cardHeader}>
+                    <ComponentIcon type="note" />
+                    <span style={s.cardTitle}>Note</span>
+                    <button style={s.closeBtn} onClick={() => setInspectorOpen(false)} title="Close">×</button>
+                  </div>
+                  <div style={s.cardBody}>
+                    <textarea
+                      style={s.textarea}
+                      value={selectedNote.text}
+                      autoFocus
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        store.transact('Edit note text', (draft) => {
+                          const n = draft.notes[selectedNote.id];
+                          if (n) n.text = value;
+                        });
+                      }}
+                    />
+                    <button style={s.deleteBtn} onClick={deleteSelected}>Delete</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
-          {selectedWire && selected?.kind === 'wire' && inspectorOpen && (
-            <div style={{ position: 'absolute', left: selectedWire.midpoint.x, top: selectedWire.midpoint.y + 14, zIndex: 3 }}>
-              <WireInspector
-                store={store}
-                wire={selectedWire}
-                onDelete={deleteSelected}
-                onClose={() => setInspectorOpen(false)}
-                onUngroupWire={
-                  store.doc.wires[selectedWire.wireId]?.twistGroupId
-                    ? () => removeWireFromGroup(store.doc.wires[selectedWire.wireId]!.twistGroupId!, selectedWire.wireId)
-                    : undefined
-                }
-                onGroupAlone={
-                  store.doc.wires[selectedWire.wireId]?.twistGroupId
-                    ? undefined
-                    : () => groupSingleWire(selectedWire.wireId)
-                }
-                onAutoRoute={
-                  selectedWire.manualWaypoints.length > 0 ? () => clearBends(selectedWire.wireId) : undefined
-                }
-              />
-            </div>
-          )}
+          {selectedWire && selected?.kind === 'wire' && inspectorOpen && (() => {
+            const { x: screenX, y: screenY } = canvasToScreen(selectedWire.midpoint.x, selectedWire.midpoint.y, scale, panX, panY);
+            return (
+              <div style={{ position: 'absolute', left: screenX, top: screenY + 14, zIndex: 3 }}>
+                <WireInspector
+                  store={store}
+                  wire={selectedWire}
+                  onDelete={deleteSelected}
+                  onClose={() => setInspectorOpen(false)}
+                  onUngroupWire={
+                    store.doc.wires[selectedWire.wireId]?.twistGroupId
+                      ? () => removeWireFromGroup(store.doc.wires[selectedWire.wireId]!.twistGroupId!, selectedWire.wireId)
+                      : undefined
+                  }
+                  onGroupAlone={
+                    store.doc.wires[selectedWire.wireId]?.twistGroupId
+                      ? undefined
+                      : () => groupSingleWire(selectedWire.wireId)
+                  }
+                  onAutoRoute={
+                    selectedWire.manualWaypoints.length > 0 ? () => clearBends(selectedWire.wireId) : undefined
+                  }
+                />
+              </div>
+            );
+          })()}
 
-          {selectedGroup && selected?.kind === 'group' && inspectorOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                left: (wiresByGroup.get(selectedGroup.id)?.[0]?.midpoint.x ?? 40),
-                top: (wiresByGroup.get(selectedGroup.id)?.[0]?.midpoint.y ?? 40) + 14,
-                zIndex: 3,
-              }}
-            >
-              <GroupInspector
-                store={store}
-                group={selectedGroup}
-                memberWires={wiresByGroup.get(selectedGroup.id) ?? []}
-                onUngroup={() => ungroupWires(selectedGroup.id)}
-                onRemoveMember={(wid) => removeWireFromGroup(selectedGroup.id, wid)}
-                onClose={() => setInspectorOpen(false)}
-              />
-            </div>
-          )}
+          {selectedGroup && selected?.kind === 'group' && inspectorOpen && (() => {
+            const anchor = wiresByGroup.get(selectedGroup.id)?.[0]?.midpoint ?? { x: 40, y: 40 };
+            const { x: screenX, y: screenY } = canvasToScreen(anchor.x, anchor.y, scale, panX, panY);
+            return (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: screenX,
+                  top: screenY + 14,
+                  zIndex: 3,
+                }}
+              >
+                <GroupInspector
+                  store={store}
+                  group={selectedGroup}
+                  memberWires={wiresByGroup.get(selectedGroup.id) ?? []}
+                  onUngroup={() => ungroupWires(selectedGroup.id)}
+                  onRemoveMember={(wid) => removeWireFromGroup(selectedGroup.id, wid)}
+                  onClose={() => setInspectorOpen(false)}
+                />
+              </div>
+            );
+          })()}
 
-          {selectedMate && selectedSceneMate && selected?.kind === 'mate' && inspectorOpen && (
-            <div style={{ position: 'absolute', left: selectedSceneMate.midpoint.x, top: selectedSceneMate.midpoint.y + 14, zIndex: 3 }}>
-              <MateInspector
-                store={store}
-                mate={selectedMate}
-                onDelete={deleteSelected}
-                onClose={() => setInspectorOpen(false)}
-              />
-            </div>
-          )}
+          {selectedMate && selectedSceneMate && selected?.kind === 'mate' && inspectorOpen && (() => {
+            const { x: screenX, y: screenY } = canvasToScreen(selectedSceneMate.midpoint.x, selectedSceneMate.midpoint.y, scale, panX, panY);
+            return (
+              <div style={{ position: 'absolute', left: screenX, top: screenY + 14, zIndex: 3 }}>
+                <MateInspector
+                  store={store}
+                  mate={selectedMate}
+                  onDelete={deleteSelected}
+                  onClose={() => setInspectorOpen(false)}
+                />
+              </div>
+            );
+          })()}
 
           {contextMenu && (
             <ContextMenu
@@ -2421,13 +2443,23 @@ function SignalDirectionRow({
 /** The `− N +` stepper the reference app floats above a selected connector
  * (spec §2.3). Removing is guarded: it only ever drops the trailing cavity,
  * and refuses if that cavity has a wire on it. */
-function CavityStepper({ store, connector, node }: { store: HarnessStore; connector: Connector; node: SceneNode }) {
+export function CavityStepper({
+  store, connector, node, scale, panX, panY,
+}: {
+  store: HarnessStore;
+  connector: Connector;
+  node: SceneNode;
+  scale: number;
+  panX: number;
+  panY: number;
+}) {
   const count = connector.cavities.length;
   const lastCavity = connector.cavities[count - 1];
   const removeDisabled = count <= 0 || (!!lastCavity && cavityIsWired(store, connector.id, lastCavity.id));
+  const { x: screenX, y: screenY } = canvasToScreen(node.x, node.y, scale, panX, panY);
 
   return (
-    <div style={{ position: 'absolute', left: node.x, top: node.y - 38, zIndex: 2 }}>
+    <div style={{ position: 'absolute', left: screenX, top: screenY - 38, zIndex: 2 }}>
       <div style={s.stepperPill}>
         <button
           style={s.stepperBtn}

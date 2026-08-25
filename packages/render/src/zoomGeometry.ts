@@ -416,3 +416,32 @@ export function zoomViewAboutCursor(opts: {
   const y = axis(opts.cursorY, opts.scrollTop, opts.panY, opts.contentHeight, opts.viewportHeight);
   return { panX: x.pan, panY: y.pan, scrollLeft: x.scroll, scrollTop: y.scroll };
 }
+
+/**
+ * Selected component card screen position in LayoutCanvas.
+ *
+ * Positions the floating component inspector card below the component's
+ * layout glyph. The card is anchored at the component's screen center,
+ * offset horizontally by -30px (centered on typical card width), and
+ * placed vertically below the scaled hover ring (`hoverRadius * scale`)
+ * plus a fixed screen margin (`marginPx`).
+ *
+ * Scaling `hoverRadius` with zoom is review fix T04: at 200% zoom the hover
+ * ring extends 48 screen pixels below center, so unscaled `hoverRadius` (24px)
+ * would place the card overlapping the glyph.
+ */
+export function layoutComponentCardPosition(
+  canvasCenter: Point,
+  scale: number,
+  panX: number,
+  panY: number,
+  hoverRadius: number = 24,
+  marginPx: number = 22,
+): { left: number; top: number } {
+  const screen = canvasToScreen(canvasCenter.x, canvasCenter.y, scale, panX, panY);
+  return {
+    left: screen.x - 30,
+    top: screen.y + hoverRadius * scale + marginPx,
+  };
+}
+
