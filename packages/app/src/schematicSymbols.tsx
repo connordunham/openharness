@@ -15,7 +15,7 @@
  */
 
 import type { Component, HarnessDocument } from '@openharness/core';
-import type { SceneNode } from '@openharness/render';
+import { normalizeRotationDegrees, type SceneNode } from '@openharness/render';
 
 /**
  * Component types drawn as real schematic symbols instead of the generic
@@ -37,14 +37,27 @@ export function spliceSymbol(x: number, y: number, w: number, h: number) {
 /** Terminal symbol: a stub lead into a ring — the single-port lug shape
  * (spec §7.2's "ring terminal"), reused for every TerminalKind since the
  * kind itself is already surfaced as text via SceneRow.label. Ports sit on
- * the right unless flipped (see schematicScene.ts's Terminal handling). */
-export function terminalSymbol(x: number, y: number, w: number, h: number, flipped: boolean) {
-  const cy = y + h / 2;
-  const ringR = Math.min(h * 0.34, 6.5);
-  const ringCx = flipped ? x + w * 0.28 : x + w * 0.72;
-  const leadFrom = flipped ? x + w : x;
-  const leadTo = flipped ? ringCx + ringR : ringCx - ringR;
-  return { leadD: `M ${leadFrom} ${cy} L ${leadTo} ${cy}`, ringCx, ringCy: cy, ringR };
+ * the right unless flipped or rotated (see schematicScene.ts's Terminal handling). */
+export function terminalSymbol(x: number, y: number, w: number, h: number, flipped: boolean, rotation = 0) {
+  const rot = normalizeRotationDegrees(rotation);
+  const isVertical = rot === 90 || rot === 270;
+  if (isVertical) {
+    const cx = x + w / 2;
+    const ringR = Math.min(w * 0.34, 6.5);
+    const portAtTop = (rot === 90 && flipped) || (rot === 270 && !flipped);
+    const ringCy = portAtTop ? y + h * 0.28 : y + h * 0.72;
+    const leadFrom = portAtTop ? y + h : y;
+    const leadTo = portAtTop ? ringCy + ringR : ringCy - ringR;
+    return { leadD: `M ${cx} ${leadFrom} L ${cx} ${leadTo}`, ringCx: cx, ringCy, ringR };
+  } else {
+    const cy = y + h / 2;
+    const ringR = Math.min(h * 0.34, 6.5);
+    const portAtLeft = (rot === 0 && flipped) || (rot === 180 && !flipped);
+    const ringCx = portAtLeft ? x + w * 0.28 : x + w * 0.72;
+    const leadFrom = portAtLeft ? x + w : x;
+    const leadTo = portAtLeft ? ringCx + ringR : ringCx - ringR;
+    return { leadD: `M ${leadFrom} ${cy} L ${leadTo} ${cy}`, ringCx, ringCy: cy, ringR };
+  }
 }
 
 /** Resistor symbol: the classic zigzag between two stub leads. */
@@ -104,7 +117,8 @@ export function renderNodeSymbol(node: SceneNode, color: string, doc: HarnessDoc
     case 'terminal': {
       const component = doc.components[node.componentId];
       const flipped = component?.type === 'terminal' && component.flipped === true;
-      const sym = terminalSymbol(x, y, w, h, flipped);
+      const rotation = component?.rotation ?? 0;
+      const sym = terminalSymbol(x, y, w, h, flipped, rotation);
       return (
         <g>
           <path d={sym.leadD} fill="none" {...strokeProps} />

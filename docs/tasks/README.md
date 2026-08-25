@@ -118,7 +118,7 @@ would otherwise invent its own, differently wrong, version.
 | T02 | Mates | L | ✅ complete — B5 (mate rendering/creation), B6 (terminal-to-terminal union), B7 (odd AWG sizes) fixed; re-review approved |
 | T03 | Wire-gauge-vs-contact validation | M | ✅ complete |
 | T04 | Zoom | M | ✅ complete — B1 (pan in transform), B2 (`clientToCanvas` scale-aware), B3 (input mapping), B8 (scroll-offset anchor), B4 (fit-to-view/selection), C9 (DRAG_THRESHOLD in screen px), C10 (zoom overlay positioning via `canvasToScreen`) fixed; running-app verification complete |
-| T05 | Schematic ergonomics | M | not started |
+| T05 | Schematic ergonomics | M | ✅ complete — 90° rotation (R key and right-click menu) transposing node dimensions/ports with flipped composition; discrete connector width scaling (75%, 100%, 125%, 150%, 200%) via widthPercent; cavity operations (move up/down/insert-below/delete) with signal/contact/seal refs moving, guarded deletion, Tab/Shift+Tab navigation; same-connector jumper wires routing as `jumper` with zero length and no NO_ROUTE diagnostic; latent array-index bugs fixed in inspector (cavity/core mutations now ID-based); row labels rotated 90°/270° to prevent overlap; exit-stub limitation documented; 13 new tests (602 total), all four gates green; running-app verification complete |
 | T06 | View toggles and selection info | M | not started |
 | T07 | Search and destinations | L | not started |
 | T08 | Groups and the device convention | M | not started |

@@ -75,7 +75,15 @@ describe('rotateConnector — 90° steps', () => {
     expect(rotateConnector(store, store.doc, 'c1', false)).toBe(180);
   });
 
-  it('refuses non-connectors and unknown ids — document untouched', () => {
+  it('rotates terminals as well', () => {
+    const d = singleConnectorDoc();
+    d.components['t1'] = { id: 't1', type: 'terminal', refdes: 'T1', terminalKind: 'ring', custom: {} };
+    const store = new HarnessStore(d);
+    expect(rotateConnector(store, store.doc, 't1')).toBe(90);
+    expect(store.doc.components['t1']!.rotation).toBe(90);
+  });
+
+  it('refuses non-connectors/terminals and unknown ids — document untouched', () => {
     const d = singleConnectorDoc();
     d.components['s1'] = { id: 's1', type: 'splice', refdes: 'S1', layoutPosition: { x: 0, y: 0 }, custom: {} } satisfies Splice;
     const store = new HarnessStore(d);
@@ -190,11 +198,21 @@ describe('rotationActionForKey — the R-key decision', () => {
     expect(rotationActionForKey(plain, selectedConnector, doc, true)).toBeNull();
   });
 
-  it('needs a selected CONNECTOR — nothing selected, a bundle, or a splice all do nothing', () => {
+  it('needs a selected CONNECTOR or TERMINAL — nothing selected, a bundle, note, wire, or a splice all do nothing', () => {
     expect(rotationActionForKey(plain, null, doc, false)).toBeNull();
     expect(rotationActionForKey(plain, { kind: 'bundle', id: 'b1' }, doc, false)).toBeNull();
+    expect(rotationActionForKey(plain, { kind: 'note', id: 'n1' }, doc, false)).toBeNull();
+    expect(rotationActionForKey(plain, { kind: 'wire', id: 'w1' }, doc, false)).toBeNull();
+    expect(rotationActionForKey(plain, { kind: 'group', id: 'g1' }, doc, false)).toBeNull();
+    expect(rotationActionForKey(plain, { kind: 'mate', id: 'm1' }, doc, false)).toBeNull();
     const withSplice = singleConnectorDoc();
     withSplice.components['s1'] = { id: 's1', type: 'splice', refdes: 'S1', custom: {} } satisfies Splice;
     expect(rotationActionForKey(plain, { kind: 'component', id: 's1' }, withSplice, false)).toBeNull();
+
+    // Terminals are rotatable with plain R, but cannot be auto-optimized with Shift+R
+    const withTerminal = singleConnectorDoc();
+    withTerminal.components['t1'] = { id: 't1', type: 'terminal', refdes: 'T1', terminalKind: 'ring', custom: {} };
+    expect(rotationActionForKey(plain, { kind: 'component', id: 't1' }, withTerminal, false)).toBe('rotate');
+    expect(rotationActionForKey({ ...plain, shiftKey: true }, { kind: 'component', id: 't1' }, withTerminal, false)).toBeNull();
   });
 });

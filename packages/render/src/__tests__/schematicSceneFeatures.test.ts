@@ -195,3 +195,114 @@ describe('shield termination nodes', () => {
     expect(scene.shieldNodes.map((n) => n.groupId)).toEqual(['outer']);
   });
 });
+
+describe('schematic node rotation and dimensions', () => {
+  it('rotation transposes node dimensions and the ports follow', () => {
+    // 2 cavities -> unrotated width = 160, unrotated height = 24 + 2 * 22 = 68
+    const doc = createEmptyDocument('Test');
+    const c1 = connector('c1', 'C1', 100, 100, 2);
+    doc.components['c1'] = c1;
+
+    // Unrotated (0°)
+    const scene0 = computeSchematicScene(doc);
+    const node0 = scene0.nodes[0]!;
+    expect(node0.width).toBe(BOX_WIDTH);
+    expect(node0.height).toBe(HEADER_HEIGHT + 2 * ROW_HEIGHT);
+    expect(node0.rows[0]!.point).toEqual({ x: 100 + BOX_WIDTH, y: 100 + HEADER_HEIGHT + ROW_HEIGHT / 2 });
+    expect(node0.rows[0]!.dir).toBe('right');
+
+    // Rotated 90° -> width and height are transposed
+    c1.rotation = 90;
+    const scene90 = computeSchematicScene(doc);
+    const node90 = scene90.nodes[0]!;
+    expect(node90.width).toBe(HEADER_HEIGHT + 2 * ROW_HEIGHT);
+    expect(node90.height).toBe(BOX_WIDTH);
+    // Port 1 is transposed to bottom edge
+    const unrotatedH = HEADER_HEIGHT + 2 * ROW_HEIGHT;
+    const baseY0 = HEADER_HEIGHT + ROW_HEIGHT / 2;
+    expect(node90.rows[0]!.point).toEqual({ x: 100 + (unrotatedH - baseY0), y: 100 + BOX_WIDTH });
+    expect(node90.rows[0]!.dir).toBe('right');
+
+    // Rotated 180°
+    c1.rotation = 180;
+    const scene180 = computeSchematicScene(doc);
+    const node180 = scene180.nodes[0]!;
+    expect(node180.width).toBe(BOX_WIDTH);
+    expect(node180.height).toBe(HEADER_HEIGHT + 2 * ROW_HEIGHT);
+    expect(node180.rows[0]!.point).toEqual({ x: 100, y: 100 + (unrotatedH - baseY0) });
+    expect(node180.rows[0]!.dir).toBe('left');
+
+    // Rotated 270°
+    c1.rotation = 270;
+    const scene270 = computeSchematicScene(doc);
+    const node270 = scene270.nodes[0]!;
+    expect(node270.width).toBe(HEADER_HEIGHT + 2 * ROW_HEIGHT);
+    expect(node270.height).toBe(BOX_WIDTH);
+    expect(node270.rows[0]!.point).toEqual({ x: 100 + baseY0, y: 100 });
+    expect(node270.rows[0]!.dir).toBe('right');
+  });
+
+  it('rotation and flipped compose sensibly', () => {
+    const doc = createEmptyDocument('Test');
+    const c1 = connector('c1', 'C1', 100, 100, 2);
+    c1.flipped = true;
+    c1.rotation = 90;
+    doc.components['c1'] = c1;
+
+    const scene = computeSchematicScene(doc);
+    const node = scene.nodes[0]!;
+    const unrotatedH = HEADER_HEIGHT + 2 * ROW_HEIGHT;
+    const baseY0 = HEADER_HEIGHT + ROW_HEIGHT / 2;
+
+    expect(node.width).toBe(unrotatedH);
+    expect(node.height).toBe(BOX_WIDTH);
+    // Flipped + 90° puts ports on the top edge (y = 100) with dir left
+    expect(node.rows[0]!.point).toEqual({ x: 100 + (unrotatedH - baseY0), y: 100 });
+    expect(node.rows[0]!.dir).toBe('left');
+
+    // Flipped + 180° puts ports on the right edge with dir right
+    c1.rotation = 180;
+    const scene180 = computeSchematicScene(doc);
+    const node180 = scene180.nodes[0]!;
+    expect(node180.rows[0]!.point).toEqual({ x: 100 + BOX_WIDTH, y: 100 + (unrotatedH - baseY0) });
+    expect(node180.rows[0]!.dir).toBe('right');
+  });
+
+  it('scales node width when widthPercent is specified', () => {
+    const doc = createEmptyDocument('Test');
+    const c1 = connector('c1', 'C1', 100, 100, 1);
+    c1.widthPercent = 150; // 150% of 160 = 240
+    doc.components['c1'] = c1;
+
+    const scene = computeSchematicScene(doc);
+    const node = scene.nodes[0]!;
+    expect(node.width).toBe(240);
+    expect(node.rows[0]!.point.x).toBe(100 + 240);
+
+    // When rotated 90°, transposed height becomes 240
+    c1.rotation = 90;
+    const scene90 = computeSchematicScene(doc);
+    const node90 = scene90.nodes[0]!;
+    expect(node90.height).toBe(240);
+  });
+
+  it('rotates terminal and transposes its dimensions', () => {
+    const doc = createEmptyDocument('Test');
+    doc.components['t1'] = {
+      id: 't1',
+      type: 'terminal',
+      refdes: 'T1',
+      terminalKind: 'ring',
+      schematicPosition: { x: 50, y: 50 },
+      rotation: 90,
+      custom: {},
+    };
+
+    const scene = computeSchematicScene(doc);
+    const node = scene.nodes[0]!;
+    const unrotatedW = BOX_WIDTH * 0.6; // 96
+    const unrotatedH = HEADER_HEIGHT + ROW_HEIGHT; // 46
+    expect(node.width).toBe(unrotatedH);
+    expect(node.height).toBe(unrotatedW);
+  });
+});

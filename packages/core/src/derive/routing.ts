@@ -46,6 +46,18 @@ export function computeRoutes(doc: HarnessDocument): Map<string, RouteResult> {
       continue;
     }
 
+    // A wire connecting two cavities on the same connector (or same component)
+    // is a jumper wire (T05 §4). It is a real conductor with zero length that
+    // never enters bundle routing and never produces a NO_ROUTE diagnostic.
+    if (
+      wire.source.kind === 'cavity' &&
+      wire.target.kind === 'cavity' &&
+      wire.source.componentId === wire.target.componentId
+    ) {
+      routes.set(wireId, { status: 'jumper', segments: [] });
+      continue;
+    }
+
     const aHost = resolveEndpointHost(doc, wire.source, new Set(), wireId);
     const bHost = resolveEndpointHost(doc, wire.target, new Set(), wireId);
 

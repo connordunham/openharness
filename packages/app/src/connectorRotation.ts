@@ -62,9 +62,9 @@ export function rotateConnector(
   clockwise = true,
 ): number | undefined {
   const c = doc.components[connectorId];
-  if (!c || c.type !== 'connector') return undefined;
+  if (!c || (c.type !== 'connector' && c.type !== 'terminal')) return undefined;
   const next = normalizeRotationDegrees((c.rotation ?? 0) + (clockwise ? 90 : -90));
-  store.transact(`Rotate connector to ${next}°`, (draft) => {
+  store.transact(`Rotate ${c.type} to ${next}°`, (draft) => {
     applyRotation(draft, connectorId, next);
   });
   return next;
@@ -97,12 +97,19 @@ export function autoOptimizeConnector(
   return optimal;
 }
 
-/** What the R key means for the Layout canvas, decided without a DOM: plain
- * R rotates, Shift+R auto-optimizes, everything else (other keys, modified
- * R, typing in a form field, a non-connector selection) is null. */
+/** A canvas selection target that might be rotatable. Preserves compile-time
+ * type safety for selection kinds across both Layout and Schematic canvases. */
+export type RotatableSelection =
+  | { kind: 'component'; id: string }
+  | { kind: 'bundle' | 'note' | 'wire' | 'group' | 'mate'; id: string }
+  | null;
+
+/** What the R key means for the Layout and Schematic canvases, decided without a DOM: plain
+ * R rotates, Shift+R auto-optimizes (connectors only), everything else (other keys, modified
+ * R, typing in a form field, a non-connector/terminal selection) is null. */
 export function rotationActionForKey(
   e: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
-  selected: { kind: 'component' | 'bundle'; id: string } | null,
+  selected: RotatableSelection,
   doc: HarnessDocument,
   targetIsFormField: boolean,
 ): 'rotate' | 'optimize' | null {
@@ -111,6 +118,10 @@ export function rotationActionForKey(
   if (targetIsFormField) return null;
   if (!selected || selected.kind !== 'component') return null;
   const c = doc.components[selected.id];
-  if (!c || c.type !== 'connector') return null;
-  return e.shiftKey ? 'optimize' : 'rotate';
+  // Terminals are R-rotatable in both Layout and Schematic views (consistent with Phase 2b);
+  // Shift+R auto-optimization is connector-only since terminals have no bundles to route.
+  if (!c || (c.type !== 'connector' && c.type !== 'terminal')) return null;
+  if (e.shiftKey && c.type === 'connector') return 'optimize';
+  if (e.shiftKey) return null;
+  return 'rotate';
 }

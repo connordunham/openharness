@@ -73,3 +73,39 @@ describe('SchematicCanvas — mate rendering', () => {
     expect(render(new HarnessStore(doc()))).not.toContain('>mate<');
   });
 });
+
+describe('SchematicCanvas — rotated connector rendering', () => {
+  it('positions row labels and divider line appropriately for 90° rotation', () => {
+    const d = doc();
+    d.components['c1']!.rotation = 90;
+    const html = render(new HarnessStore(d));
+
+    // For 90° rotation, header divider line is vertical at x = node.x + node.width - HEADER_HEIGHT
+    // Unrotated height = 24 + 2 * 22 = 68. Width when transposed = 68. Height when transposed = BOX_WIDTH = 160.
+    // Line at x = 0 + 68 - 24 = 44.
+    expect(html).toContain('x1="44" y1="0" x2="44" y2="160"');
+
+    // Row labels are rotated 90° so they read vertically in each cavity column without overlapping
+    expect(html).toContain('transform="rotate(90)"');
+    expect(html).toContain('x="8" y="-37"');
+    expect(html).toContain('x="8" y="-15"');
+  });
+
+  it('positions divider line for 180° and 270° rotations', () => {
+    const d180 = doc();
+    d180.components['c1']!.rotation = 180;
+    const html180 = render(new HarnessStore(d180));
+    // 180° divider line is at y = node.y + node.height - HEADER_HEIGHT = 0 + 68 - 24 = 44
+    expect(html180).toContain('x1="0" y1="44" x2="160" y2="44"');
+
+    const d270 = doc();
+    d270.components['c1']!.rotation = 270;
+    const html270 = render(new HarnessStore(d270));
+    // 270° divider line is at x = node.x + HEADER_HEIGHT = 24
+    expect(html270).toContain('x1="24" y1="0" x2="24" y2="160"');
+    // Row labels are rotated -90° for 270° rotation
+    expect(html270).toContain('transform="rotate(-90)"');
+    expect(html270).toContain('x="-152" y="31"');
+    expect(html270).toContain('x="-152" y="53"');
+  });
+});

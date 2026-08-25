@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeRoutes, computeRouteAvoidingBundle } from '../derive/routing.js';
+import { computeLengths } from '../derive/length.js';
+import { computeDerivedModel } from '../derive/index.js';
 import {
   doc, withEntities, connector, cavity, splice, cable,
   wire, bundle, cavityEndpoint, spliceEndpoint, cableCoreEndpoint,
@@ -58,13 +60,32 @@ describe('computeRoutes', () => {
     expect(computeRoutes(d).get('w1')?.status).toBe('unplaced');
   });
 
-  it('a wire between two cavities on the same connector needs no route ("exact", zero segments)', () => {
+  it('a wire between two cavities on the same connector routes as "jumper" (zero segments)', () => {
     const d = withEntities(doc(), {
       components: [connector('c1', 'C1', [cavity('a'), cavity('b')], { layoutPosition: { x: 0, y: 0 } })],
       wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c1', 'b'))],
     });
 
-    expect(computeRoutes(d).get('w1')).toEqual({ status: 'exact', segments: [] });
+    expect(computeRoutes(d).get('w1')).toEqual({ status: 'jumper', segments: [] });
+  });
+
+  it('a same-connector wire routes as jumper with zero length and does not produce a NO_ROUTE diagnostic', () => {
+    const d = withEntities(doc(), {
+      components: [connector('c1', 'C1', [cavity('a'), cavity('b')])],
+      wires: [wire('w1', 'W1', cavityEndpoint('c1', 'a'), cavityEndpoint('c1', 'b'))],
+    });
+
+    const routes = computeRoutes(d);
+    expect(routes.get('w1')).toEqual({ status: 'jumper', segments: [] });
+
+    const lengths = computeLengths(d, routes);
+    const len = lengths.get('w1');
+    expect(len?.status).toBe('jumper');
+    expect(len?.value).toBe(0);
+
+    const derived = computeDerivedModel(d);
+    const noRouteDiags = derived.diagnostics.filter((diag) => diag.ruleId === 'NO_ROUTE');
+    expect(noRouteDiags).toHaveLength(0);
   });
 
   it('picks the shortest path across multiple bundles, tie-broken deterministically', () => {

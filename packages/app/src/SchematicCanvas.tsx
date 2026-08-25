@@ -56,6 +56,7 @@ import {
   waypointInsertIndex, segmentIntersectsRect, type SceneNode, type SceneRow, type SceneWire,
   ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas, exceedsDragThreshold, canvasToScreen,
   schematicContentRects, schematicSelectionRects, type SchematicSelectionItem,
+  normalizeRotationDegrees,
 } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
@@ -71,6 +72,8 @@ import {
   setMateTargetCavityInDraft, addMateCavityPairInDraft, updateMateCavityPairInDraft,
   removeMateCavityPairInDraft, clearMateCavityMapInDraft,
 } from './mateOps.js';
+import { rotateConnector, rotationActionForKey } from './connectorRotation.js';
+import { moveCavity, insertCavityBelow, deleteCavity, cavityIsWired } from './cavityOps.js';
 
 interface Props {
   store: HarnessStore;
@@ -182,7 +185,9 @@ const DRAG_THRESHOLD = 3;
 interface ContextMenuState {
   x: number;
   y: number;
-  target: { kind: 'component' | 'wire' | 'group' | 'note' | 'mate'; id: string };
+  target:
+    | { kind: 'component' | 'wire' | 'group' | 'note' | 'mate'; id: string }
+    | { kind: 'cavity'; componentId: string; cavityId: string };
 }
 
 const SPLICE_KINDS: SpliceKind[] = ['crimp', 'weld', 'solderSleeve'];
@@ -384,13 +389,6 @@ function componentPartNumber(store: HarnessStore, componentId: string): string {
 function nextShieldRefdes(store: HarnessStore): string {
   const count = Object.values(store.doc.wireGroups).filter((g) => !!g.shield).length;
   return `SH${count + 1}`;
-}
-
-/** True if any wire endpoint touches this cavity — used to guard the "−"
- * stepper (spec §2.3: "Add/remove trailing cavities (guarded if wired)"). */
-function cavityIsWired(store: HarnessStore, componentId: string, cavityId: string): boolean {
-  const touches = (ep: Endpoint) => ep.kind === 'cavity' && ep.componentId === componentId && ep.cavityId === cavityId;
-  return Object.values(store.doc.wires).some((w) => touches(w.source) || touches(w.target));
 }
 
 function ensureConnectorPart(draft: HarnessDocument, componentId: string): ConnectorPart {
@@ -1135,6 +1133,19 @@ export function SchematicCanvas({
     [select],
   );
 
+  const onRotationKey = useCallback(
+    (e: React.KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inFormField = !!target
+        && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
+      const action = rotationActionForKey(e, selected, store.doc, inFormField);
+      if (!action || !selected || selected.kind !== 'component') return;
+      e.preventDefault();
+      rotateConnector(store, store.doc, selected.id, true);
+    },
+    [selected, store],
+  );
+
   /**
    * Left-drag on empty canvas is a marquee selection (Connor: "lasso-drag to
    * select multiple wires").
@@ -1445,7 +1456,7 @@ export function SchematicCanvas({
   })();
 
   return (
-    <div style={s.root} onClick={() => setContextMenu(null)}>
+    <div style={s.root} onClick={() => setContextMenu(null)} tabIndex={-1} onKeyDown={onRotationKey}>
       <div style={s.addToolbar}>
         <span style={s.addToolbarLabel}>Add</span>
         <AddButton icon="connector" label="Connector" onClick={addConnector} />
@@ -1762,6 +1773,9 @@ export function SchematicCanvas({
               // indirect one — this connector is an endpoint of a wire
               // highlighted via hoveredWireId/hoveredBundleId (see above).
               const isHovered = hoveredComponentId === node.componentId || !!highlightedComponentIds?.has(node.componentId);
+              const comp = store.doc.components[node.componentId];
+              const rot = normalizeRotationDegrees(comp?.rotation ?? 0);
+              const isTransposed = rot === 90 || rot === 270;
               return (
                 <g
                   key={node.componentId}
@@ -1814,13 +1828,46 @@ export function SchematicCanvas({
                         onContextMenu={(e) => onNodeContextMenu(node, e)}
                         style={{ cursor: 'grab', filter: isSelected ? theme.shadow.selected : undefined }}
                       />
-                      {node.rows.length > 0 && (
-                        <line
-                          x1={node.x} y1={node.y + HEADER_HEIGHT} x2={node.x + node.width} y2={node.y + HEADER_HEIGHT}
-                          stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
-                          strokeWidth={1} style={{ pointerEvents: 'none' }}
-                        />
-                      )}
+                      {node.rows.length > 0 && (() => {
+                        if (rot === 90) {
+                          return (
+                            <line
+                              x1={node.x + node.width - HEADER_HEIGHT} y1={node.y}
+                              x2={node.x + node.width - HEADER_HEIGHT} y2={node.y + node.height}
+                              stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
+                              strokeWidth={1} style={{ pointerEvents: 'none' }}
+                            />
+                          );
+                        }
+                        if (rot === 180) {
+                          return (
+                            <line
+                              x1={node.x} y1={node.y + node.height - HEADER_HEIGHT}
+                              x2={node.x + node.width} y2={node.y + node.height - HEADER_HEIGHT}
+                              stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
+                              strokeWidth={1} style={{ pointerEvents: 'none' }}
+                            />
+                          );
+                        }
+                        if (rot === 270) {
+                          return (
+                            <line
+                              x1={node.x + HEADER_HEIGHT} y1={node.y}
+                              x2={node.x + HEADER_HEIGHT} y2={node.y + node.height}
+                              stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
+                              strokeWidth={1} style={{ pointerEvents: 'none' }}
+                            />
+                          );
+                        }
+                        return (
+                          <line
+                            x1={node.x} y1={node.y + HEADER_HEIGHT}
+                            x2={node.x + node.width} y2={node.y + HEADER_HEIGHT}
+                            stroke={isSelected ? theme.color.accent : theme.color.nodeBorder}
+                            strokeWidth={1} style={{ pointerEvents: 'none' }}
+                          />
+                        );
+                      })()}
                       <foreignObject x={node.x + 6} y={node.y + 3} width={16} height={16} style={{ pointerEvents: 'none', color: theme.color.textMuted }}>
                         <ComponentIcon type={node.type} size={13} {...connectorAppearance(store.doc.components[node.componentId], store.doc)} />
                       </foreignObject>
@@ -1909,7 +1956,7 @@ export function SchematicCanvas({
                       </text>
                     );
                   })()}
-                  {node.rows.map((row, i) => {
+                  {node.rows.map((row) => {
                     const isConnector = node.type === 'connector';
                     // The backshell row is a connector row but not a cavity,
                     // so it has no signal to name — offering "(click to
@@ -1917,11 +1964,49 @@ export function SchematicCanvas({
                     // cavity that doesn't exist. See BACKSHELL_CAVITY_ID.
                     const nameable = isConnector && row.rowId !== BACKSHELL_CAVITY_ID;
                     const isEditing = nameable && editingCavity?.componentId === node.componentId && editingCavity.cavityId === row.rowId;
-                    const labelY = node.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT * 0.68;
+                    const isPortAtBottom = row.point.y > node.y + node.height / 2;
+                    let labelX: number;
+                    let labelY: number;
+                    let transform: string | undefined;
+                    if (rot === 90) {
+                      const screenY = isPortAtBottom ? node.y + 8 : node.y + 12;
+                      const screenX = row.point.x + 4;
+                      labelX = screenY;
+                      labelY = -screenX;
+                      transform = 'rotate(90)';
+                    } else if (rot === 270) {
+                      const screenY = isPortAtBottom ? node.y + node.height - 12 : node.y + node.height - 8;
+                      const screenX = row.point.x - 4;
+                      labelX = -screenY;
+                      labelY = screenX;
+                      transform = 'rotate(-90)';
+                    } else {
+                      labelX = node.x + 8;
+                      labelY = row.point.y + 4;
+                      transform = undefined;
+                    }
                     return (
-                      <g key={row.rowId}>
+                      <g
+                        key={row.rowId}
+                        onContextMenu={(e) => {
+                          if (nameable) {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            setContextMenu({
+                              x: e.clientX,
+                              y: e.clientY,
+                              target: { kind: 'cavity', componentId: node.componentId, cavityId: row.rowId },
+                            });
+                          }
+                        }}
+                      >
                         {isEditing ? (
-                          <foreignObject x={node.x + 6} y={node.y + HEADER_HEIGHT + i * ROW_HEIGHT + 2} width={node.width - 12} height={ROW_HEIGHT - 4}>
+                          <foreignObject
+                            x={isTransposed ? row.point.x - Math.min(node.width / 2, 40) : node.x + 6}
+                            y={isTransposed ? (isPortAtBottom ? row.point.y - 24 : row.point.y + 4) : row.point.y - 9}
+                            width={isTransposed ? Math.min(node.width, 80) : node.width - 12}
+                            height={ROW_HEIGHT - 4}
+                          >
                             <InlineSignalInput
                               initialValue={row.signal ?? ''}
                               onCommit={(value) => {
@@ -1935,12 +2020,32 @@ export function SchematicCanvas({
                                 setEditingCavity(null);
                               }}
                               onCancel={() => setEditingCavity(null)}
+                              onNavigate={(direction, value) => {
+                                store.transact('Edit cavity signal', (draft) => {
+                                  const c = draft.components[node.componentId];
+                                  if (c?.type === 'connector') {
+                                    const cav = c.cavities.find((cv) => cv.id === row.rowId);
+                                    if (cav) cav.signal = value || undefined;
+                                  }
+                                });
+                                const c = store.doc.components[node.componentId];
+                                if (c?.type === 'connector') {
+                                  const curIdx = c.cavities.findIndex((cv) => cv.id === row.rowId);
+                                  const nextIdx = direction === 'next' ? curIdx + 1 : curIdx - 1;
+                                  if (nextIdx >= 0 && nextIdx < c.cavities.length) {
+                                    setEditingCavity({ componentId: node.componentId, cavityId: c.cavities[nextIdx]!.id });
+                                    return;
+                                  }
+                                }
+                                setEditingCavity(null);
+                              }}
                             />
                           </foreignObject>
                         ) : (
                           <text
-                            x={node.x + 8}
+                            x={labelX}
                             y={labelY}
+                            transform={transform}
                             fontSize={11} fill={theme.color.textMuted}
                             style={{ cursor: nameable ? 'text' : 'default' }}
                             onClick={(e) => {
@@ -2380,7 +2485,17 @@ function AddButton({ icon, label, onClick }: { icon: Component['type'] | 'note';
  * directly on the schematic node (spec request: "let users edit the signal
  * names right in the schematic part, no need for a drop down menu"). Commits
  * on Enter/blur, cancels on Escape. */
-function InlineSignalInput({ initialValue, onCommit, onCancel }: { initialValue: string; onCommit: (value: string) => void; onCancel: () => void }) {
+function InlineSignalInput({
+  initialValue,
+  onCommit,
+  onCancel,
+  onNavigate,
+}: {
+  initialValue: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+  onNavigate?: (direction: 'next' | 'prev', value: string) => void;
+}) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
     ref.current?.focus();
@@ -2394,8 +2509,20 @@ function InlineSignalInput({ initialValue, onCommit, onCancel }: { initialValue:
       onClick={(e) => e.stopPropagation()}
       onBlur={(e) => onCommit(e.target.value)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') { e.preventDefault(); onCommit((e.target as HTMLInputElement).value); }
-        else if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          if (onNavigate) {
+            onNavigate(e.shiftKey ? 'prev' : 'next', (e.target as HTMLInputElement).value);
+          } else {
+            onCommit((e.target as HTMLInputElement).value);
+          }
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          onCommit((e.target as HTMLInputElement).value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          onCancel();
+        }
       }}
     />
   );
@@ -2455,7 +2582,7 @@ export function CavityStepper({
 }) {
   const count = connector.cavities.length;
   const lastCavity = connector.cavities[count - 1];
-  const removeDisabled = count <= 0 || (!!lastCavity && cavityIsWired(store, connector.id, lastCavity.id));
+  const removeDisabled = count <= 0 || (!!lastCavity && cavityIsWired(store.doc, connector.id, lastCavity.id));
   const { x: screenX, y: screenY } = canvasToScreen(node.x, node.y, scale, panX, panY);
 
   return (
@@ -2650,7 +2777,7 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
 
       {component.type === 'connector' && (
         <div style={s.rowList}>
-          {component.cavities.map((cavity, i) => (
+          {component.cavities.map((cavity) => (
             <div key={cavity.id} style={s.signalRowGroup}>
               <div style={s.signalRow}>
                 <span style={s.signalRowTag}>{cavity.designation}</span>
@@ -2662,7 +2789,10 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
                     const value = e.target.value;
                     store.transact('Edit cavity signal', (draft) => {
                       const c = draft.components[component.id];
-                      if (c?.type === 'connector') c.cavities[i]!.signal = value || undefined;
+                      if (c?.type === 'connector') {
+                        const cav = c.cavities.find((cv) => cv.id === cavity.id);
+                        if (cav) cav.signal = value || undefined;
+                      }
                     });
                   }}
                 />
@@ -2673,7 +2803,10 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
                 onChange={(mutate) => {
                   store.transact('Edit signal direction', (draft) => {
                     const c = draft.components[component.id];
-                    if (c?.type === 'connector') mutate(c.cavities[i]!);
+                    if (c?.type === 'connector') {
+                      const cav = c.cavities.find((cv) => cv.id === cavity.id);
+                      if (cav) mutate(cav);
+                    }
                   });
                 }}
               />
@@ -2695,7 +2828,10 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
                     const value = e.target.value;
                     store.transact('Edit core color', (draft) => {
                       const c = draft.components[component.id];
-                      if (c?.type === 'cable') c.cores[i]!.color = value;
+                      if (c?.type === 'cable') {
+                        const cr = c.cores.find((co) => co.id === core.id);
+                        if (cr) cr.color = value;
+                      }
                     });
                   }}
                 />
@@ -2705,7 +2841,10 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
                     const value = e.target.value;
                     store.transact('Edit core signal', (draft) => {
                       const c = draft.components[component.id];
-                      if (c?.type === 'cable') c.cores[i]!.signal = value || undefined;
+                      if (c?.type === 'cable') {
+                        const cr = c.cores.find((co) => co.id === core.id);
+                        if (cr) cr.signal = value || undefined;
+                      }
                     });
                   }}
                 />
@@ -2716,7 +2855,10 @@ function ComponentEditFields({ store, component }: { store: HarnessStore; compon
                 onChange={(mutate) => {
                   store.transact('Edit signal direction', (draft) => {
                     const c = draft.components[component.id];
-                    if (c?.type === 'cable') mutate(c.cores[i]!);
+                    if (c?.type === 'cable') {
+                      const cr = c.cores.find((co) => co.id === core.id);
+                      if (cr) mutate(cr);
+                    }
                   });
                 }}
               />
@@ -3465,45 +3607,121 @@ function ContextMenu({
   onAutoRoute: (wireId: string) => void;
   onStartMate: (componentId: string) => void;
 }) {
-  const items: { label: string; onClick: () => void; danger?: boolean }[] = [];
-  items.push({ label: 'Edit', onClick: () => { onEdit(); onClose(); } });
+  const items: { label: string; onClick: () => void; danger?: boolean; disabled?: boolean }[] = [];
+  const target = state.target;
 
-  if (state.target.kind === 'component') {
-    const component = store.doc.components[state.target.id];
-    items.push({ label: 'Duplicate', onClick: () => { onDuplicate(state.target.id); onClose(); } });
-    if (component && (component.type === 'connector' || component.type === 'cable')) {
+  if (target.kind === 'cavity') {
+    const conn = store.doc.components[target.componentId];
+    if (conn && conn.type === 'connector') {
+      const idx = conn.cavities.findIndex((c) => c.id === target.cavityId);
+      const isFirst = idx <= 0;
+      const isLast = idx >= conn.cavities.length - 1;
+      const isWired = cavityIsWired(store.doc, target.componentId, target.cavityId);
+
+      if (!isFirst) {
+        items.push({
+          label: 'Move up',
+          onClick: () => {
+            moveCavity(store, target.componentId, target.cavityId, 'up');
+            onClose();
+          },
+        });
+      }
+      if (!isLast) {
+        items.push({
+          label: 'Move down',
+          onClick: () => {
+            moveCavity(store, target.componentId, target.cavityId, 'down');
+            onClose();
+          },
+        });
+      }
       items.push({
-        label: 'Flip', onClick: () => {
-          store.transact('Flip component', (draft) => {
-            const c = draft.components[state.target.id];
-            if (c && (c.type === 'connector' || c.type === 'cable')) c.flipped = !c.flipped;
-          });
+        label: 'Insert below',
+        onClick: () => {
+          insertCavityBelow(store, target.componentId, target.cavityId);
           onClose();
         },
       });
+      items.push({
+        label: 'Delete cavity',
+        danger: true,
+        disabled: isWired,
+        onClick: () => {
+          if (!isWired) {
+            deleteCavity(store, target.componentId, target.cavityId);
+            onClose();
+          }
+        },
+      });
     }
-    // Mates join connectors/terminals (see Mate in core/types.ts) — the other
-    // component types have nothing to mate with, so the entry only appears
-    // where it can do something.
-    if (component && (component.type === 'connector' || component.type === 'terminal')) {
-      items.push({ label: 'Create mate', onClick: () => { onStartMate(state.target.id); onClose(); } });
-    }
-    items.push({ label: 'Delete', danger: true, onClick: () => { onDelete(); onClose(); } });
-  } else if (state.target.kind === 'wire') {
-    const wire = store.doc.wires[state.target.id];
-    if (wire?.schematicWaypoints?.length) {
-      items.push({ label: 'Reset to auto-route', onClick: () => { onAutoRoute(state.target.id); onClose(); } });
-    }
-    if (wire?.twistGroupId) {
-      items.push({ label: 'Remove from group', onClick: () => { onUngroupWire(wire.twistGroupId!, state.target.id); onClose(); } });
-    }
-    items.push({ label: 'Delete wire', danger: true, onClick: () => { onDelete(); onClose(); } });
-  } else if (state.target.kind === 'group') {
-    items.push({ label: 'Ungroup', onClick: () => { onUngroup(state.target.id); onClose(); } });
-  } else if (state.target.kind === 'mate') {
-    items.push({ label: 'Delete mate', danger: true, onClick: () => { onDelete(); onClose(); } });
   } else {
-    items.push({ label: 'Delete note', danger: true, onClick: () => { onDelete(); onClose(); } });
+    items.push({ label: 'Edit', onClick: () => { onEdit(); onClose(); } });
+
+    if (target.kind === 'component') {
+      const component = store.doc.components[target.id];
+      items.push({ label: 'Duplicate', onClick: () => { onDuplicate(target.id); onClose(); } });
+      if (component && (component.type === 'connector' || component.type === 'terminal')) {
+        items.push({
+          label: 'Rotate',
+          onClick: () => {
+            rotateConnector(store, store.doc, target.id, true);
+            onClose();
+          },
+        });
+      }
+      if (component && (component.type === 'connector' || component.type === 'cable' || component.type === 'terminal')) {
+        items.push({
+          label: 'Flip',
+          onClick: () => {
+            store.transact('Flip component', (draft) => {
+              const c = draft.components[target.id];
+              if (c && (c.type === 'connector' || c.type === 'cable' || c.type === 'terminal')) c.flipped = !c.flipped;
+            });
+            onClose();
+          },
+        });
+      }
+      if (component && component.type === 'connector') {
+        const currentWidth = component.widthPercent ?? 100;
+        const widths = [75, 100, 125, 150, 200];
+        for (const w of widths) {
+          const isCurrent = currentWidth === w;
+          items.push({
+            label: `Width: ${w}%${isCurrent ? ' ✓' : ''}`,
+            onClick: () => {
+              store.transact(`Set width to ${w}%`, (draft) => {
+                const c = draft.components[target.id];
+                if (c && c.type === 'connector') {
+                  if (w === 100) delete c.widthPercent;
+                  else c.widthPercent = w;
+                }
+              });
+              onClose();
+            },
+          });
+        }
+      }
+      if (component && (component.type === 'connector' || component.type === 'terminal')) {
+        items.push({ label: 'Create mate', onClick: () => { onStartMate(target.id); onClose(); } });
+      }
+      items.push({ label: 'Delete', danger: true, onClick: () => { onDelete(); onClose(); } });
+    } else if (target.kind === 'wire') {
+      const wire = store.doc.wires[target.id];
+      if (wire?.schematicWaypoints?.length) {
+        items.push({ label: 'Reset to auto-route', onClick: () => { onAutoRoute(target.id); onClose(); } });
+      }
+      if (wire?.twistGroupId) {
+        items.push({ label: 'Remove from group', onClick: () => { onUngroupWire(wire.twistGroupId!, target.id); onClose(); } });
+      }
+      items.push({ label: 'Delete wire', danger: true, onClick: () => { onDelete(); onClose(); } });
+    } else if (target.kind === 'group') {
+      items.push({ label: 'Ungroup', onClick: () => { onUngroup(target.id); onClose(); } });
+    } else if (target.kind === 'mate') {
+      items.push({ label: 'Delete mate', danger: true, onClick: () => { onDelete(); onClose(); } });
+    } else {
+      items.push({ label: 'Delete note', danger: true, onClick: () => { onDelete(); onClose(); } });
+    }
   }
 
   return (
@@ -3513,7 +3731,13 @@ function ContextMenu({
         {items.map((item) => (
           <button
             key={item.label}
-            style={{ ...s.contextMenuItem, color: item.danger ? theme.color.danger : theme.color.textStrong }}
+            disabled={item.disabled}
+            style={{
+              ...s.contextMenuItem,
+              color: item.disabled ? theme.color.textFaint : item.danger ? theme.color.danger : theme.color.textStrong,
+              cursor: item.disabled ? 'not-allowed' : 'pointer',
+              opacity: item.disabled ? 0.5 : 1,
+            }}
             onClick={item.onClick}
           >
             {item.label}

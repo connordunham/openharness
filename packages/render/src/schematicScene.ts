@@ -15,6 +15,7 @@ import type { HarnessDocument, Component, Endpoint, Point, SignalDirection, Wire
 import { BACKSHELL_CAVITY_ID, DEFAULT_SHIELD_POSITION } from '@openharness/core';
 import { computeRoutedPath, computeManualRoutedPath, pathMidpoint, pointsToPathD, type ExitDir } from './routing.js';
 import { shieldTerminationMarks } from './overlays.js';
+import { normalizeRotationDegrees } from './connectorOptimization.js';
 
 export const ROW_HEIGHT = 22;
 export const HEADER_HEIGHT = 24;
@@ -318,18 +319,56 @@ function buildNode(component: Component): SceneNode | null {
   switch (component.type) {
     case 'connector': {
       const flipped = component.flipped === true;
-      const dir: ExitDir = flipped ? 'left' : 'right';
-      const exitX = flipped ? pos.x : pos.x + BOX_WIDTH;
-      const rows: SceneRow[] = component.cavities.map((cavity, i) => ({
-        rowId: cavity.id,
-        label: cavity.designation,
-        signal: cavity.signal,
-        point: { x: exitX, y: pos.y + HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2 },
-        dir,
-        signalCapable: true,
-        direction: cavity.direction,
-        impedanceMatched: cavity.impedanceMatched,
-      }));
+      const widthPercent = component.widthPercent ?? 100;
+      const unrotatedWidth = Math.round((BOX_WIDTH * widthPercent) / 100);
+      const rot = normalizeRotationDegrees(component.rotation ?? 0);
+      const isTransposed = rot === 90 || rot === 270;
+
+      const totalRowCount = component.cavities.length + (component.backshellTermination ? 1 : 0);
+      const unrotatedHeight = HEADER_HEIGHT + Math.max(1, totalRowCount) * ROW_HEIGHT;
+
+      const width = isTransposed ? unrotatedHeight : unrotatedWidth;
+      const height = isTransposed ? unrotatedWidth : unrotatedHeight;
+
+      // Known limitation: wire exit stubs point horizontally ('left' | 'right')
+      // even when the connector is rotated 90° or 270° and ports sit on top/bottom
+      // horizontal edges. This causes exit stubs to run along the box edge rather
+      // than exiting perpendicularly through it. Fixing this requires extending
+      // ExitDir from 'left' | 'right' to 4 directions ('left' | 'right' | 'up' | 'down')
+      // and updating the router (routing.ts / manualRouting.ts); tracked as a follow-up.
+      const calcRowPointAndDir = (baseY: number): { point: Point; dir: ExitDir } => {
+        let pt: Point;
+        let dir: ExitDir;
+        if (rot === 0) {
+          pt = { x: pos.x + (flipped ? 0 : unrotatedWidth), y: pos.y + baseY };
+          dir = flipped ? 'left' : 'right';
+        } else if (rot === 90) {
+          pt = { x: pos.x + (unrotatedHeight - baseY), y: pos.y + (flipped ? 0 : unrotatedWidth) };
+          dir = flipped ? 'left' : 'right';
+        } else if (rot === 180) {
+          pt = { x: pos.x + (flipped ? unrotatedWidth : 0), y: pos.y + (unrotatedHeight - baseY) };
+          dir = flipped ? 'right' : 'left';
+        } else { // 270
+          pt = { x: pos.x + baseY, y: pos.y + (flipped ? unrotatedWidth : 0) };
+          dir = flipped ? 'left' : 'right';
+        }
+        return { point: pt, dir };
+      };
+
+      const rows: SceneRow[] = component.cavities.map((cavity, i) => {
+        const baseY = HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2;
+        const { point, dir } = calcRowPointAndDir(baseY);
+        return {
+          rowId: cavity.id,
+          label: cavity.designation,
+          signal: cavity.signal,
+          point,
+          dir,
+          signalCapable: true,
+          direction: cavity.direction,
+          impedanceMatched: cavity.impedanceMatched,
+        };
+      });
       // Backshell termination (Connor: "an optional connector 'backshell
       // termination' toggle that adds a BS contact"). Appended as an extra
       // row below the real cavities — wirable like any other port, but not a
@@ -337,17 +376,19 @@ function buildNode(component: Component): SceneNode | null {
       // controls (a shell ground has no signal direction), and it is never
       // written back into `component.cavities`. See BACKSHELL_CAVITY_ID.
       if (component.backshellTermination) {
+        const baseY = HEADER_HEIGHT + component.cavities.length * ROW_HEIGHT + ROW_HEIGHT / 2;
+        const { point, dir } = calcRowPointAndDir(baseY);
         rows.push({
           rowId: BACKSHELL_CAVITY_ID,
           label: 'BS',
-          point: { x: exitX, y: pos.y + HEADER_HEIGHT + rows.length * ROW_HEIGHT + ROW_HEIGHT / 2 },
+          point,
           dir,
           signalCapable: false,
         });
       }
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
-        x: pos.x, y: pos.y, width: BOX_WIDTH, height: HEADER_HEIGHT + Math.max(1, rows.length) * ROW_HEIGHT,
+        x: pos.x, y: pos.y, width, height,
         rows,
       };
     }
@@ -393,19 +434,40 @@ function buildNode(component: Component): SceneNode | null {
       };
     }
     case 'terminal': {
-      // Same flip affordance as Connector/Cable (Connor: "ensure all
+      // Same flip and rotation affordance as Connector (Connor: "ensure all
       // relevant features added to the connector objects also appear in
       // the other components") — a terminal has exactly one directional
       // port, same shape of problem.
       const flipped = component.flipped === true;
-      const width = BOX_WIDTH * 0.6;
-      const height = HEADER_HEIGHT + ROW_HEIGHT;
-      const dir: ExitDir = flipped ? 'left' : 'right';
-      const exitX = flipped ? pos.x : pos.x + width;
+      const unrotatedWidth = BOX_WIDTH * 0.6;
+      const unrotatedHeight = HEADER_HEIGHT + ROW_HEIGHT;
+      const rot = normalizeRotationDegrees(component.rotation ?? 0);
+      const isTransposed = rot === 90 || rot === 270;
+
+      const width = isTransposed ? unrotatedHeight : unrotatedWidth;
+      const height = isTransposed ? unrotatedWidth : unrotatedHeight;
+
+      const baseY = unrotatedHeight / 2;
+      let point: Point;
+      let dir: ExitDir;
+      if (rot === 0) {
+        point = { x: pos.x + (flipped ? 0 : unrotatedWidth), y: pos.y + baseY };
+        dir = flipped ? 'left' : 'right';
+      } else if (rot === 90) {
+        point = { x: pos.x + (unrotatedHeight - baseY), y: pos.y + (flipped ? 0 : unrotatedWidth) };
+        dir = flipped ? 'left' : 'right';
+      } else if (rot === 180) {
+        point = { x: pos.x + (flipped ? unrotatedWidth : 0), y: pos.y + (unrotatedHeight - baseY) };
+        dir = flipped ? 'right' : 'left';
+      } else { // 270
+        point = { x: pos.x + baseY, y: pos.y + (flipped ? unrotatedWidth : 0) };
+        dir = flipped ? 'left' : 'right';
+      }
+
       return {
         componentId: component.id, type: component.type, refdes: component.refdes, label: component.label,
         x: pos.x, y: pos.y, width, height,
-        rows: [{ rowId: component.id, label: component.terminalKind, point: { x: exitX, y: pos.y + height / 2 }, dir, signalCapable: false }],
+        rows: [{ rowId: component.id, label: component.terminalKind, point, dir, signalCapable: false }],
       };
     }
     case 'resistor':
