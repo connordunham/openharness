@@ -10,6 +10,7 @@
   "scripts": {
     "prepare": "node scripts/prepare.mjs",
     "build": "tsc -b && npm run build --workspaces --if-present",
+    "build:example": "node scripts/build-example.mjs",
     "package": "node scripts/package.mjs",
     "package:win": "node scripts/package.mjs win",
     "package:linux": "node scripts/package.mjs linux",

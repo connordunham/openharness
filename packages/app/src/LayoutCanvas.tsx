@@ -14,7 +14,7 @@
  * `lowerBound` (geometric estimate) otherwise. So this pane's whole job is
  * just: let the user place components physically and draw the bundles
  * between them — the wire-level routing and lengths fall out for free, and
- * this pane's "Wire lengths" sidebar shows the payoff directly.
+ * this pane's Routing sidebar shows the payoff directly.
  *
  * Coordinates on this canvas are physical millimetres, not arbitrary pixel
  * space (the derive layer's geometric-distance fallback assumes
@@ -24,6 +24,23 @@
  * Branch points (spec §4.2: "layout-only... never has schematicPosition")
  * are the one component type that only exists here — they're pure layout
  * topology, so they're created from this pane's toolbar, not Schematic's.
+ *
+ * Routing UI (see connectGesture.ts for the gesture itself): the pane has an
+ * explicit tool switcher — Select (V) and Route (C) — because placing and
+ * routing are its two verbs and routing used to be reachable only through a
+ * 4px handle dimmed to 40% until hover, which meant nothing on screen said
+ * the pane could route at all. In Route the whole node body is a bundle
+ * source; in Select the handle still is, and now accepts a drag as well as a
+ * click. Either way the gesture is shared with Schematic's wire drawing, so
+ * both panes take drag-to-connect AND click-then-click, draw a live preview
+ * of the thing being created, highlight only the nodes that would actually
+ * accept the drop, and cancel on Escape.
+ *
+ * The sidebar leads with route health rather than a flat length list: an
+ * unroutable wire is the most consequential state this pane can be in and it
+ * was previously visible only in the Diagnostics pane. Every number there
+ * comes from `derived.wireLengths`, so it cannot drift from what the routing
+ * engine concluded.
  *
  * Routing nodes (Connor's follow-up: "need to be able to add routing
  * nodes"): a bundle's path is drawn through `Bundle.waypoints` — grabbing
@@ -103,7 +120,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
-import type { HarnessStore, HarnessDocument, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle } from '@openharness/core';
+import type { HarnessStore, HarnessDocument, Component, Point, Endpoint, WireGroup, ShieldTermination, Bundle, Wire, LengthStatus } from '@openharness/core';
 import {
   newInstanceId, computeDerivedModel, endpointComponentId, computeRouteAvoidingBundle,
   DEFAULT_BUNDLE_COLOR,
@@ -125,6 +142,7 @@ import { SHIELD_TERMINATION_STYLES } from './shieldConstants.js';
 import { useBundleRouting } from './useBundleRouting.js';
 import { useConnectorRotation } from './useConnectorRotation.js';
 import { rotationActionForKey } from './connectorRotation.js';
+import { useConnectGesture } from './useConnectGesture.js';
 
 const PX_PER_MM = 4;
 const BRANCH_R = 7;
@@ -148,6 +166,9 @@ const NOSE_HALF_W = 5;
 const HOVER_R = 24;
 
 type Selection = { kind: 'component'; id: string } | { kind: 'bundle'; id: string } | null;
+
+/** See the `tool` state in LayoutCanvas for why this pane is modal at all. */
+export type LayoutTool = 'select' | 'route';
 
 interface Dragging {
   id: string;
@@ -633,7 +654,19 @@ export function LayoutCanvas({
   const [dragging, setDragging] = useState<Dragging | null>(null);
   const [draggingWaypoint, setDraggingWaypoint] = useState<DraggingWaypoint | null>(null);
   const [draggingInline, setDraggingInline] = useState<{ componentId: string } | null>(null);
-  const [pendingBundleFrom, setPendingBundleFrom] = useState<string | null>(null);
+  /**
+   * Which verb the pane is in. This canvas has exactly two primary verbs —
+   * place a component, and route a bundle between two of them — and until now
+   * both lived in one modeless soup where routing was reachable only through
+   * a 4px handle held at 40% opacity until hover. That is a discoverability
+   * problem, not a preference: nothing on screen said the pane could route.
+   *
+   * `select` keeps every existing gesture exactly as it was (including the
+   * stub handle, which now drags as well as clicks), so nothing is taken away
+   * from someone who already knows the pane; `route` makes the whole node
+   * body a bundle source, which is what makes routing a large layout fast.
+   */
+  const [tool, setTool] = useState<LayoutTool>('select');
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Zoom is per-pane and view-only (T04 contract): the state lives in the
@@ -647,6 +680,7 @@ export function LayoutCanvas({
   // bundle. All gesture math/document writes live in useBundleRouting — the
   // canvas only feeds pointer events and renders the resulting state.
   const bundleRouting = useBundleRouting(store, scale, PX_PER_MM);
+
   /** Brief confirmation ring after an auto-optimize (Phase 2b visual
    * feedback) — the id of the connector to highlight, cleared by a timer. */
   const [flashId, setFlashId] = useState<string | null>(null);
@@ -665,7 +699,93 @@ export function LayoutCanvas({
   const [notice, setNotice] = useState<string | null>(null);
 
   const doc = store.doc;
+
+  /**
+   * Bundle creation. Shares one state machine with Schematic's wire drawing
+   * (connectGesture.ts), so both panes accept drag-to-connect AND
+   * click-then-click, draw a live preview, and cancel on Escape.
+   *
+   * `canConnect` rejects the two edges the document cannot hold: a bundle
+   * from a node to itself, and a second bundle between a pair that already
+   * has one (the routing graph is simple — a duplicate edge would add a
+   * parallel path Dijkstra would have to tie-break for no modelling gain).
+   * The same predicate drives target highlighting, so a node that will not
+   * accept the drop never lights up as though it would.
+   */
+  /** Scroll anchor for the toolbar's route chip → sidebar's unrouted group. */
+  const unroutedRef = useRef<HTMLDivElement>(null);
+
+
+  const bundleExists = useCallback(
+    (a: string, b: string) =>
+      Object.values(doc.bundles).some(
+        (bn) =>
+          (bn.sourceId === a && bn.targetId === b) || (bn.sourceId === b && bn.targetId === a),
+      ),
+    // doc.bundles is replaced wholesale by the store on every transaction.
+    [doc.bundles],
+  );
+
+  const connect = useConnectGesture<string>({
+    samePort: (a, b) => a === b,
+    canConnect: (from, to) => from !== to && !bundleExists(from, to),
+    onConnect: (fromId, toId) => {
+      store.transact('Add bundle', (draft) => {
+        const id = newInstanceId();
+        const n = Object.keys(draft.bundles).length;
+        draft.bundles[id] = {
+          id, refdes: `BND${n + 1}`, sourceId: fromId, targetId: toId, custom: {},
+        };
+      });
+      const from = doc.components[fromId];
+      const to = doc.components[toId];
+      setNotice(`Bundle added: ${from?.refdes ?? fromId} → ${to?.refdes ?? toId}`);
+    },
+  });
   const derived = computeDerivedModel(doc);
+
+  /**
+   * Route health, derived entirely from `derived.wireLengths` — nothing here
+   * is tracked separately, so it cannot drift from what the routing engine
+   * actually concluded.
+   *
+   * `noRoute` and `unplaced` are the two actionable statuses and are grouped
+   * together as "needs a route": one means the endpoints are placed but no
+   * bundle path joins them, the other that a component has not been placed at
+   * all. Both are fixed in this pane and both leave the wire with no length.
+   * `jumper` and `shield` are deliberately counted as routed — they are
+   * terminal answers from routing.ts, not missing ones (a jumper has zero
+   * length by definition; a shield drain has no bundle path of its own).
+   */
+  const routeSummary = useMemo(() => {
+    const unroutedWires: { wire: Wire; status: LengthStatus }[] = [];
+    const routedWires: { wire: Wire; status: LengthStatus; value: number }[] = [];
+    let exact = 0;
+    let totalUm = 0;
+
+    for (const wire of Object.values(doc.wires)) {
+      const len = derived.wireLengths.get(wire.id);
+      const status: LengthStatus = len?.status ?? 'unplaced';
+      if (status === 'noRoute' || status === 'unplaced') {
+        unroutedWires.push({ wire, status });
+        continue;
+      }
+      const value = len?.value ?? 0;
+      routedWires.push({ wire, status, value });
+      if (status === 'exact' || status === 'overridden') exact += 1;
+      totalUm += value;
+    }
+
+    return {
+      total: unroutedWires.length + routedWires.length,
+      routed: routedWires.length,
+      unrouted: unroutedWires.length,
+      exact,
+      totalUm,
+      unroutedWires,
+      routedWires,
+    };
+  }, [doc.wires, derived.wireLengths]);
   // Phase 2b connector orientation: R rotates the selected connector 90°,
   // Shift+R auto-optimizes its stored rotation (fewest bundle crossings).
   // Fed the canvas's own scale/exclusion/branch constants so the optimizer
@@ -848,6 +968,25 @@ export function LayoutCanvas({
       const target = e.target as HTMLElement | null;
       const inFormField = !!target
         && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
+
+      // Tool shortcuts. Same form-field guard as rotation — typing "v" in an
+      // inspector field must never switch tools. No modifiers, so they don't
+      // collide with Ctrl+V.
+      if (!inFormField && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (e.key === 'v' || e.key === 'V') {
+          e.preventDefault();
+          setTool('select');
+          connect.cancel();
+          return;
+        }
+        if (e.key === 'c' || e.key === 'C') {
+          e.preventDefault();
+          setTool('route');
+          setNotice(null);
+          return;
+        }
+      }
+
       const action = rotationActionForKey(e, selected, doc, inFormField);
       // action !== null already implies a connector is selected (that's what
       // rotationActionForKey decides) — re-check explicitly rather than
@@ -867,28 +1006,43 @@ export function LayoutCanvas({
         setNotice(`${refdes} rotated to ${applied}°`);
       }
     },
-    [selected, doc, connectorRotation],
+    [selected, doc, connectorRotation, connect],
   );
 
   const onNodeMouseDown = useCallback(
     (component: Component, e: React.MouseEvent) => {
       e.stopPropagation();
       setNotice(null);
-      if (pendingBundleFrom) {
-        if (pendingBundleFrom === component.id) { setPendingBundleFrom(null); return; }
-        store.transact('Add bundle', (draft) => {
-          const id = newInstanceId();
-          const n = Object.keys(draft.bundles).length;
-          draft.bundles[id] = { id, refdes: `BND${n + 1}`, sourceId: pendingBundleFrom, targetId: component.id, custom: {} };
-        });
-        setPendingBundleFrom(null);
+      const pos = component.layoutPosition!;
+
+      // A gesture already in flight always wins, whatever the tool: this is
+      // the second click of a click-to-connect, and treating it as a fresh
+      // node drag would silently discard the source the user picked.
+      // In `route` the whole node body is a bundle source, which is the
+      // difference between the two tools.
+      if (connect.active || tool === 'route') {
+        setSelected({ kind: 'component', id: component.id });
+        connect.press(component.id, pos, e.clientX, e.clientY);
         return;
       }
+
       setSelected({ kind: 'component', id: component.id });
-      const pos = component.layoutPosition!;
       setDragging({ id: component.id, pointerStartX: e.clientX, pointerStartY: e.clientY, posStartX: pos.x, posStartY: pos.y });
     },
-    [pendingBundleFrom, store],
+    [connect, tool],
+  );
+
+  /** Release over a node completes a drag-to-connect. Separate from the
+   * window-level mouseup in useConnectGesture, which only ever sees releases
+   * over empty canvas — this is the one that knows a node is under the
+   * pointer. */
+  const onNodeMouseUp = useCallback(
+    (component: Component, e: React.MouseEvent) => {
+      if (!connect.active) return;
+      e.stopPropagation();
+      connect.release(component.id);
+    },
+    [connect],
   );
 
   /** The routing-node insertion transaction shared by the click-on-line
@@ -907,6 +1061,10 @@ export function LayoutCanvas({
 
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // An armed connect gesture takes priority: its preview line has to
+      // track the cursor even while the pointer is over a node that would
+      // otherwise start its own hover work.
+      if (connect.move(e.clientX, e.clientY, clientToMm(e.clientX, e.clientY))) return;
       // Bundle drag / wire extraction gets first refusal — when one is live
       // it consumes the move (and decides for itself whether the pointer has
       // travelled far enough to count as a drag yet).
@@ -949,7 +1107,7 @@ export function LayoutCanvas({
         }
       }
     },
-    [dragging, draggingWaypoint, draggingInline, store, inlinePassThroughs, doc, nodeGlyphs, clientToPx, bundleRouting],
+    [dragging, draggingWaypoint, draggingInline, store, inlinePassThroughs, doc, nodeGlyphs, clientToPx, clientToMm, bundleRouting, connect],
   );
   const onMouseUp = useCallback(() => {
     // Finish any bundle gesture first. A release that never crossed the drag
@@ -1193,6 +1351,30 @@ export function LayoutCanvas({
     <div style={s.root}>
       <div style={s.toolbar}>
         <span style={s.toolbarLabel}>Layout</span>
+        {/* Tool switcher. The pane's two verbs, said out loud — see the
+            `tool` state for why this canvas is modal at all. Keyboard V/C
+            because those are where every drawing tool puts select and
+            connect, and because reaching for the toolbar mid-route is
+            exactly the friction this is meant to remove. */}
+        <div style={s.toolGroup} role="radiogroup" aria-label="Layout tool">
+          <button
+            style={{ ...s.toolBtn, ...(tool === 'select' ? s.toolBtnActive : {}) }}
+            onClick={() => { setTool('select'); connect.cancel(); }}
+            role="radio" aria-checked={tool === 'select'}
+            title="Select and move components (V)"
+          >
+            Select
+          </button>
+          <button
+            style={{ ...s.toolBtn, ...(tool === 'route' ? s.toolBtnActive : {}) }}
+            onClick={() => { setTool('route'); setNotice(null); }}
+            role="radio" aria-checked={tool === 'route'}
+            title="Route bundles: drag from one component to another (C)"
+          >
+            Route
+          </button>
+        </div>
+        <span style={s.toolbarDivider} />
         <button style={s.toolbarBtn} onClick={addBranchPoint}>+ Branch point</button>
         {/* Fit-to-view / fit-to-selection (review B4) — view-only, so plain
             toolbar buttons rather than document mutations. */}
@@ -1216,12 +1398,38 @@ export function LayoutCanvas({
             ))}
           </div>
         )}
-        {pendingBundleFrom && <span style={s.hint}>Click another component to connect a bundle, or click it again to cancel.</span>}
-        {notice && <span style={s.hint}>{notice}</span>}
-        {!pendingBundleFrom && !notice && selectedComponent?.type === 'connector' && (
+        {/* Route health, always visible. Every number here was already
+            derived and none of it was ever shown — a wire with no path
+            through the bundle graph is the single most consequential state
+            this pane can be in, and until now you had to open Diagnostics to
+            find out you were in it. Clicking scrolls the sidebar's unrouted
+            group into view. */}
+        {routeSummary.total > 0 && (
+          <button
+            style={{ ...s.routeChip, ...(routeSummary.unrouted > 0 ? s.routeChipWarn : {}) }}
+            onClick={() => unroutedRef.current?.scrollIntoView({ block: 'nearest' })}
+            title={routeSummary.unrouted > 0
+              ? `${routeSummary.unrouted} wire(s) have no path through the bundle graph — show them`
+              : 'Every wire has a route through the bundle graph'}
+          >
+            {routeSummary.unrouted > 0
+              ? `${routeSummary.unrouted} unrouted / ${routeSummary.total}`
+              : `${routeSummary.total} routed`}
+          </button>
+        )}
+        {connect.active && (
+          <span style={s.hint}>
+            Drag to a highlighted component to bundle them, or click one. Escape cancels.
+          </span>
+        )}
+        {!connect.active && notice && <span style={s.hint}>{notice}</span>}
+        {!connect.active && !notice && tool === 'route' && (
+          <span style={s.hint}>Route: drag from any component to another to bundle them. V returns to Select.</span>
+        )}
+        {!connect.active && !notice && tool === 'select' && selectedComponent?.type === 'connector' && (
           <span style={s.hint}>Press R to rotate {selectedComponent.refdes} 90° · Shift+R to auto-optimize (fewest crossings).</span>
         )}
-        {!pendingBundleFrom && !notice && selectedComponent?.type !== 'connector' && Object.keys(doc.bundles).length > 0 && (
+        {!connect.active && !notice && tool === 'select' && selectedComponent?.type !== 'connector' && Object.keys(doc.bundles).length > 0 && (
           <span style={s.hintMuted}>Drag a bundle's line to move all its routing nodes, or click it to add one; select a bundle to extract wires. Hover any node to see which wires pass through it.</span>
         )}
       </div>
@@ -1460,8 +1668,16 @@ export function LayoutCanvas({
                 if (!c.layoutPosition || inlinePassThroughs.has(c.id)) return null;
                 const center = toPx(c.layoutPosition);
                 const isSelected = selected?.kind === 'component' && selected.id === c.id;
-                const isPendingFrom = pendingBundleFrom === c.id;
+                const isPendingFrom = connect.sourcePort === c.id;
                 const isHovered = hoveredComponentId === c.id;
+                /* While a connect is armed every other node is either a
+                 * legal drop or it isn't, and saying so up front is the
+                 * whole difference between "click around and find out" and
+                 * a routing UI. Uses the same predicate that gates the
+                 * commit, so the highlight can never promise a connection
+                 * the gesture would then refuse. */
+                const isConnectTarget = connect.isValidTarget(c.id);
+                const isConnectReject = connect.active && !isConnectTarget && !isPendingFrom;
                 const isBranch = c.type === 'branchPoint';
                 const glyph = isBranch ? undefined : nodeGlyphs.get(c.id);
                 // Phase 2b rotation label: shown while selected (immediate
@@ -1479,13 +1695,25 @@ export function LayoutCanvas({
                 // until it's actually relevant (hovered/selected, or a
                 // bundle-connect is in progress and every handle is a
                 // valid target).
-                const handleActive = isHovered || isSelected || isPendingFrom || !!pendingBundleFrom;
+                const handleActive = isHovered || isSelected || isPendingFrom || connect.active;
                 return (
                   <g
                     key={c.id}
                     onMouseEnter={() => onHoverComponent?.(c.id)}
                     onMouseLeave={() => onHoverComponent?.(null)}
+                    onMouseUp={(e) => onNodeMouseUp(c, e)}
+                    opacity={isConnectReject ? 0.4 : 1}
                   >
+                    {/* Drop-target ring: solid accent for a node this bundle
+                        can land on. Drawn outside the hit target so it never
+                        eats the pointer. */}
+                    {isConnectTarget && (
+                      <circle
+                        cx={center.x} cy={center.y} r={isBranch ? BRANCH_R + 7 : HOVER_R + 2}
+                        fill={theme.color.accentSoft} stroke={theme.color.accent} strokeWidth={2}
+                        style={{ pointerEvents: 'none' }}
+                      />
+                    )}
                     {isHovered && !isSelected && (
                       <circle
                         cx={center.x} cy={center.y} r={isBranch ? BRANCH_R + 5 : HOVER_R}
@@ -1599,19 +1827,51 @@ export function LayoutCanvas({
                         {c.refdes}
                       </text>
                     )}
-                    {glyph && (
-                      <circle
-                        cx={glyph.stubEnd.x} cy={glyph.stubEnd.y} r={4} fill={theme.color.nodeFill} stroke={theme.color.accent} strokeWidth={1.3}
-                        opacity={handleActive ? 1 : 0.4}
-                        style={{ cursor: 'crosshair', transition: 'opacity 100ms ease' }}
-                        onClick={(e) => { e.stopPropagation(); setPendingBundleFrom(pendingBundleFrom === c.id ? null : c.id); }}
-                      >
-                        <title>Click to start a bundle from here.</title>
-                      </circle>
+                    {glyph && tool === 'select' && (
+                      /* The bundle-source handle. Two circles: a visible 4px
+                       * dot, and an invisible 11px one over it that takes the
+                       * pointer. The old handle was a 4px hit target — small
+                       * enough that missing it and dragging the node instead
+                       * was the common outcome — and it only accepted a
+                       * click, so the drag people naturally tried did
+                       * nothing. It now feeds the same gesture the route tool
+                       * does, so drag-to-connect and click-then-click both
+                       * work from here without leaving the select tool. */
+                      <g style={{ cursor: 'crosshair' }}
+                         onMouseDown={(e) => { e.stopPropagation(); setNotice(null); connect.press(c.id, center, e.clientX, e.clientY); }}
+                         onMouseUp={(e) => { if (connect.active) { e.stopPropagation(); connect.release(c.id); } }}>
+                        <circle cx={glyph.stubEnd.x} cy={glyph.stubEnd.y} r={11} fill="transparent" />
+                        <circle
+                          cx={glyph.stubEnd.x} cy={glyph.stubEnd.y} r={4} fill={theme.color.nodeFill} stroke={theme.color.accent} strokeWidth={1.3}
+                          opacity={handleActive ? 1 : 0.4}
+                          style={{ pointerEvents: 'none', transition: 'opacity 100ms ease' }}
+                        />
+                        <title>Drag to another component to bundle them — or click here, then click the target.</title>
+                      </g>
                     )}
                   </g>
                 );
               })}
+              {/* Preview line for a bundle being drawn. Drawn last so it sits
+                  above every node, dashed and non-interactive so it reads as
+                  "not yet real" and never steals the drop target's pointer.
+                  A straight segment is the honest preview here: a new bundle
+                  has no waypoints, so a straight line IS what committing
+                  produces. */}
+              {connect.preview && (
+                <g style={{ pointerEvents: 'none' }}>
+                  <line
+                    x1={toPx(connect.preview.from).x} y1={toPx(connect.preview.from).y}
+                    x2={connect.preview.to.x * PX_PER_MM} y2={connect.preview.to.y * PX_PER_MM}
+                    stroke={theme.color.accent} strokeWidth={2} strokeDasharray="6 4" strokeLinecap="round"
+                    opacity={0.85}
+                  />
+                  <circle
+                    cx={connect.preview.to.x * PX_PER_MM} cy={connect.preview.to.y * PX_PER_MM} r={3.5}
+                    fill={theme.color.accent}
+                  />
+                </g>
+              )}
             </svg>
 
             {selectedComponent && selectedComponent.layoutPosition && (
@@ -1655,23 +1915,69 @@ export function LayoutCanvas({
           </div>
         </div>
 
+        {/* Routing panel. Was a flat "Wire lengths" list in document order,
+            which buried the only rows that need action — an unrouted wire and
+            a fully-measured one looked alike and sorted together. Now the
+            summary leads, unrouted wires come first under their own heading,
+            and the rest follow. Same data, ordered by what the user has to do
+            about it. */}
         <aside style={s.sidebar}>
-          <h3 style={s.sidebarTitle}>Wire lengths</h3>
-          {Object.keys(doc.wires).length === 0 ? (
+          <h3 style={s.sidebarTitle}>Routing</h3>
+          {routeSummary.total === 0 ? (
             <p style={s.mutedNote}>No wires yet.</p>
           ) : (
-            <div style={s.wireList}>
-              {Object.values(doc.wires).map((w) => {
-                const len = derived.wireLengths.get(w.id);
-                return (
-                  <div key={w.id} style={s.wireRow}>
-                    <span style={s.wireRefdes}>{w.refdes}</span>
-                    <span style={s.statusChip(len?.status ?? 'unplaced')}>{len?.status ?? 'unplaced'}</span>
-                    <span style={s.wireLenVal}>{len && len.value > 0 ? `${(len.value / 1000).toFixed(0)} mm` : '—'}</span>
+            <>
+              <dl style={s.summaryGrid}>
+                <dt style={s.summaryKey}>Routed</dt>
+                <dd style={s.summaryVal}>{routeSummary.routed} / {routeSummary.total}</dd>
+                <dt style={s.summaryKey}>Measured</dt>
+                <dd style={s.summaryVal} title="Every bundle on the path has an authored length, so this is not an estimate">
+                  {routeSummary.exact} / {routeSummary.total}
+                </dd>
+                <dt style={s.summaryKey}>Total length</dt>
+                <dd style={s.summaryVal}>
+                  {routeSummary.totalUm > 0 ? `${(routeSummary.totalUm / 1000).toFixed(0)} mm` : '—'}
+                </dd>
+              </dl>
+
+              {routeSummary.unroutedWires.length > 0 && (
+                <div ref={unroutedRef}>
+                  <h4 style={s.sidebarGroupTitle}>
+                    Needs a route ({routeSummary.unroutedWires.length})
+                  </h4>
+                  <p style={s.mutedNote}>
+                    No path through the bundle graph. Bundle the endpoints — or a chain of
+                    components between them — with the Route tool.
+                  </p>
+                  <div style={s.wireList}>
+                    {routeSummary.unroutedWires.map(({ wire, status }) => (
+                      <div key={wire.id} style={s.wireRow}>
+                        <span style={s.wireRefdes}>{wire.refdes}</span>
+                        <span style={s.statusChip(status)}>{status}</span>
+                        <span style={s.wireLenVal}>—</span>
+                      </div>
+                    ))}
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              )}
+
+              {routeSummary.routedWires.length > 0 && (
+                <>
+                  <h4 style={s.sidebarGroupTitle}>
+                    Routed ({routeSummary.routedWires.length})
+                  </h4>
+                  <div style={s.wireList}>
+                    {routeSummary.routedWires.map(({ wire, status, value }) => (
+                      <div key={wire.id} style={s.wireRow}>
+                        <span style={s.wireRefdes}>{wire.refdes}</span>
+                        <span style={s.statusChip(status)}>{status}</span>
+                        <span style={s.wireLenVal}>{value > 0 ? `${(value / 1000).toFixed(0)} mm` : '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
           )}
         </aside>
       </div>
@@ -1897,6 +2203,16 @@ const s = {
   /** Spread over toolbarBtn for the inert state — "Fit selection" is inert
    * until something is selected. */
   toolbarBtnDisabled: { cursor: 'default', opacity: 0.45 },
+  /* Tool switcher: one segmented control, so the two verbs read as a choice
+     between each other rather than as two unrelated buttons. */
+  toolGroup: { display: 'inline-flex', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, overflow: 'hidden' },
+  toolBtn: { padding: '6px 13px', border: 'none', background: theme.color.surface, color: theme.color.textMuted, cursor: 'pointer', fontSize: 12.5, fontWeight: 500 },
+  toolBtnActive: { background: theme.color.accent, color: '#fff', fontWeight: 600 },
+  toolbarDivider: { width: 1, alignSelf: 'stretch', margin: '2px 2px', background: theme.color.border },
+  /* Route-health chip. Neutral when everything routes, warning-toned the
+     moment it doesn't — the one number in this pane worth interrupting for. */
+  routeChip: { padding: '4px 10px', border: `1px solid ${theme.color.border}`, borderRadius: 999, background: theme.color.surface, color: theme.color.textMuted, cursor: 'pointer', fontSize: 11.5, fontWeight: 600 },
+  routeChipWarn: { borderColor: theme.color.warning, background: theme.color.warningSoft, color: theme.color.textStrong },
   unplacedGroup: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   unplacedLabel: { fontSize: 11.5, color: theme.color.textFaint, fontWeight: 500 },
   unplacedChip: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', border: `1px dashed ${theme.color.border}`, borderRadius: 999, background: 'transparent', color: theme.color.textMuted, cursor: 'pointer', fontSize: 11.5 },
@@ -1910,6 +2226,10 @@ const s = {
   sidebar: { width: 220, borderLeft: `1px solid ${theme.color.border}`, background: theme.color.surface, padding: 14, overflow: 'auto', flexShrink: 0 },
   sidebarTitle: { margin: '0 0 10px 0', fontSize: 12.5, fontWeight: 600, color: theme.color.textStrong },
   mutedNote: { color: theme.color.textMuted, fontSize: 12.5, margin: 0 },
+  sidebarGroupTitle: { margin: '16px 0 6px 0', fontSize: 11, fontWeight: 700, color: theme.color.textFaint, textTransform: 'uppercase', letterSpacing: 0.5 },
+  summaryGrid: { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', margin: '0 0 4px 0', alignItems: 'baseline' },
+  summaryKey: { fontSize: 11.5, color: theme.color.textFaint },
+  summaryVal: { fontSize: 12.5, fontWeight: 600, color: theme.color.textStrong, margin: 0, textAlign: 'right' },
   wireList: { display: 'flex', flexDirection: 'column', gap: 6 },
   wireRow: { display: 'flex', flexDirection: 'column', gap: 3, paddingBottom: 6, borderBottom: `1px solid ${theme.color.border}` },
   wireRefdes: { fontSize: 12, fontWeight: 600, color: theme.color.textStrong },

@@ -39,6 +39,14 @@
  * bare "generic" type are also left out of the "Add" toolbar.
  */
 
+/* Wire drawing note: ports feed the shared connect gesture in
+ * connectGesture.ts, the same one LayoutCanvas uses for bundles. A wire can
+ * be drawn either by dragging port-to-port or by clicking both ports, a
+ * dashed preview routed by the real 45°-jog router follows the cursor while
+ * one is in flight, and Escape cancels. Shield termination nodes are ports
+ * like any other — the drain's transaction label and colour branch on the
+ * endpoint kind rather than on a second piece of state. */
+
 import { useCallback, useMemo, useState } from 'react';
 import { useEffect, useRef } from 'react';
 import type {
@@ -56,7 +64,7 @@ import {
   waypointInsertIndex, segmentIntersectsRect, type SceneNode, type SceneRow, type SceneWire,
   ROW_HEIGHT, HEADER_HEIGHT, clientPointToCanvas, exceedsDragThreshold, canvasToScreen,
   schematicContentRects, schematicSelectionRects, type SchematicSelectionItem,
-  normalizeRotationDegrees,
+  normalizeRotationDegrees, computeRoutedPath, type ExitDir,
 } from '@openharness/render';
 import { theme } from './theme.js';
 import { ComponentIcon, connectorAppearance } from './icons.js';
@@ -73,6 +81,7 @@ import {
   removeMateCavityPairInDraft, clearMateCavityMapInDraft,
 } from './mateOps.js';
 import { rotateConnector, rotationActionForKey } from './connectorRotation.js';
+import { useConnectGesture } from './useConnectGesture.js';
 import { moveCavity, insertCavityBelow, deleteCavity, cavityIsWired } from './cavityOps.js';
 
 interface Props {
@@ -108,6 +117,11 @@ interface PendingWire {
   componentId: string;
   rowId: string;
   endpoint: Endpoint;
+  /** Which way this port's lead leaves the node. Carried so the preview can
+   * be drawn by the SAME 45°-jog router that draws the committed wire — a
+   * preview that took a different path from the thing it previews would be
+   * worse than none. Shield nodes have no exit direction of their own. */
+  dir?: ExitDir;
 }
 
 const SHIELD_ROW = '__shieldNode__';
@@ -459,7 +473,6 @@ export function SchematicCanvas({
 }: Props) {
   const [selected, setSelected] = useState<Selection>(null);
   const [multiSelect, setMultiSelect] = useState<Set<string>>(new Set());
-  const [pendingWire, setPendingWire] = useState<PendingWire | null>(null);
   // Mate creation is a two-click gesture like wiring (see PendingMate). It is
   // mutually exclusive with a pending wire: both would compete for the same
   // "next port/component click", so starting one cancels the other.
@@ -721,14 +734,49 @@ export function SchematicCanvas({
   );
 
   /**
+   * Wire drawing. Shares connectGesture.ts with the Layout pane's bundle
+   * routing, which is what gives both panes drag-to-connect, click-then-click,
+   * a live preview line and Escape-to-cancel from one implementation.
+   *
+   * The only thing rejected outright is a port to itself. A wire between two
+   * cavities of the SAME connector is deliberately allowed — that is a jumper,
+   * which routing.ts gives a `jumper` status and zero length (T05), so
+   * refusing it here would block a real harness feature.
+   */
+  const wireConnect = useConnectGesture<PendingWire>({
+    samePort: (a, b) => a.componentId === b.componentId && a.rowId === b.rowId,
+    onConnect: (from, to) => {
+      // A drain wire is an ordinary wire in every respect afterwards — it
+      // appears in nets, the interconnect table and the BOM. Only its label
+      // and default colour differ, and both follow from the endpoint kind,
+      // so no second gesture or piece of state is needed to draw one.
+      const isDrain = from.endpoint.kind === 'shieldNode' || to.endpoint.kind === 'shieldNode';
+      store.transact(isDrain ? 'Add shield drain wire' : 'Add wire', (draft) => {
+        const id = newInstanceId();
+        const n = Object.values(draft.wires).length;
+        const color = isDrain ? 'Green' : WIRE_COLORS[n % WIRE_COLORS.length]!;
+        draft.wires[id] = {
+          id, refdes: `W${n + 1}`, color,
+          source: from.endpoint, target: to.endpoint, custom: {},
+        };
+        // Connor: "all routing in schematic should appear automatically in
+        // the layout as well" — see autoRouteInLayout's doc comment.
+        const srcComponentId = endpointComponentId(from.endpoint);
+        const tgtComponentId = endpointComponentId(to.endpoint);
+        if (srcComponentId && tgtComponentId) autoRouteInLayout(draft, srcComponentId, tgtComponentId);
+      });
+    },
+  });
+
+  /**
    * Start creating a mate from a component (right-click -> "Create mate").
    * Cancels any pending wire — the two gestures share the "next click wins"
    * slot and can't both be live.
    */
   const beginMate = useCallback((componentId: string) => {
-    setPendingWire(null);
+    wireConnect.cancel();
     setPendingMate({ componentId });
-  }, []);
+  }, [wireConnect]);
 
   /**
    * Complete a pending mate against a second component. The actual direction
@@ -752,42 +800,47 @@ export function SchematicCanvas({
     [pendingMate, store, selectAndEdit],
   );
 
-  const onRowClick = useCallback(
-    (node: SceneNode, row: SceneRow) => {
-      // While a mate is pending, a port click completes it against the port's
+  /** Is this port the armed source? Drives the filled-port highlight. */
+  const isWireSource = useCallback(
+    (componentId: string, rowId: string) => {
+      const src = wireConnect.sourcePort;
+      return !!src && src.componentId === componentId && src.rowId === rowId;
+    },
+    [wireConnect.sourcePort],
+  );
+
+  /** Press on a port: completes a pending mate, or drives the wire gesture. */
+  const onRowMouseDown = useCallback(
+    (node: SceneNode, row: SceneRow, e: React.MouseEvent) => {
+      e.stopPropagation();
+      // While a mate is pending, a port press completes it against the port's
       // component — remembering the cavity in case it's terminal-into-
-      // connector (addMateInDraft decides whether the cavity applies).
+      // connector (addMateInDraft decides whether the cavity applies). Mates
+      // keep their own two-click flow; they are a different relationship and
+      // are created between components, not ports.
       if (pendingMate) {
         const cavityId = node.type === 'connector' && row.rowId !== BACKSHELL_CAVITY_ID ? row.rowId : undefined;
         completeMate(node.componentId, cavityId);
         return;
       }
-      const endpoint = rowEndpoint(node, row);
-      if (!pendingWire) {
-        setPendingWire({ componentId: node.componentId, rowId: row.rowId, endpoint });
-        return;
-      }
-      if (pendingWire.componentId === node.componentId && pendingWire.rowId === row.rowId) {
-        setPendingWire(null); // clicked the same row again -> cancel
-        return;
-      }
-      store.transact('Add wire', (draft) => {
-        const id = newInstanceId();
-        const n = Object.values(draft.wires).length;
-        const color = WIRE_COLORS[n % WIRE_COLORS.length]!;
-        draft.wires[id] = {
-          id, refdes: `W${n + 1}`, color,
-          source: pendingWire.endpoint, target: endpoint, custom: {},
-        };
-        // Connor: "all routing in schematic should appear automatically in
-        // the layout as well" — see autoRouteInLayout's doc comment.
-        const srcComponentId = endpointComponentId(pendingWire.endpoint);
-        const tgtComponentId = endpointComponentId(endpoint);
-        if (srcComponentId && tgtComponentId) autoRouteInLayout(draft, srcComponentId, tgtComponentId);
-      });
-      setPendingWire(null);
+      const port: PendingWire = {
+        componentId: node.componentId, rowId: row.rowId, endpoint: rowEndpoint(node, row), dir: row.dir,
+      };
+      wireConnect.press(port, row.point, e.clientX, e.clientY);
     },
-    [pendingWire, pendingMate, completeMate, store],
+    [pendingMate, completeMate, wireConnect],
+  );
+
+  /** Release over a port completes a drag-to-connect. */
+  const onRowMouseUp = useCallback(
+    (node: SceneNode, row: SceneRow, e: React.MouseEvent) => {
+      if (!wireConnect.active) return;
+      e.stopPropagation();
+      wireConnect.release({
+        componentId: node.componentId, rowId: row.rowId, endpoint: rowEndpoint(node, row), dir: row.dir,
+      });
+    },
+    [wireConnect],
   );
 
   // Shift-click seeds the multi-select set from whatever's already singly
@@ -946,35 +999,30 @@ export function SchematicCanvas({
   );
 
   /**
-   * Clicking a shield's termination node starts (or finishes) a wire the
-   * same way clicking a cavity does — it feeds the identical `pendingWire`
-   * state machine, so a drain wire is an ordinary wire in every respect
-   * afterwards: it appears in nets, in the interconnect table, and in the
-   * BOM. The only thing special about it is its endpoint kind.
+   * A shield's termination node behaves exactly like a cavity port: it feeds
+   * the same connect gesture, so a drain can be drawn by dragging to its
+   * target or by clicking both ends, same as any wire. The only thing special
+   * about it is its endpoint kind.
    */
-  const onShieldNodeClick = useCallback(
-    (groupId: string, e: React.MouseEvent) => {
+  const shieldPort = (groupId: string): PendingWire => ({
+    componentId: groupId, rowId: SHIELD_ROW, endpoint: { kind: 'shieldNode', groupId },
+  });
+
+  const onShieldNodeMouseDown = useCallback(
+    (groupId: string, point: Point, e: React.MouseEvent) => {
       e.stopPropagation();
-      const endpoint: Endpoint = { kind: 'shieldNode', groupId };
-      if (!pendingWire) {
-        setPendingWire({ componentId: groupId, rowId: SHIELD_ROW, endpoint });
-        return;
-      }
-      if (pendingWire.componentId === groupId && pendingWire.rowId === SHIELD_ROW) {
-        setPendingWire(null);
-        return;
-      }
-      store.transact('Add shield drain wire', (draft) => {
-        const id = newInstanceId();
-        const n = Object.values(draft.wires).length;
-        draft.wires[id] = {
-          id, refdes: `W${n + 1}`, color: 'Green',
-          source: pendingWire.endpoint, target: endpoint, custom: {},
-        };
-      });
-      setPendingWire(null);
+      wireConnect.press(shieldPort(groupId), point, e.clientX, e.clientY);
     },
-    [pendingWire, store],
+    [wireConnect],
+  );
+
+  const onShieldNodeMouseUp = useCallback(
+    (groupId: string, e: React.MouseEvent) => {
+      if (!wireConnect.active) return;
+      e.stopPropagation();
+      wireConnect.release(shieldPort(groupId));
+    },
+    [wireConnect],
   );
 
   const groupSelection = useCallback(() => {
@@ -1169,6 +1217,9 @@ export function SchematicCanvas({
 
   const onMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // An armed wire gesture owns the pointer: its preview line has to track
+      // the cursor, and nothing else should start while it is in flight.
+      if (wireConnect.move(e.clientX, e.clientY, clientToCanvas(e.clientX, e.clientY))) return;
       if (lasso) {
         setLasso({ ...lasso, current: clientToCanvas(e.clientX, e.clientY) });
         return;
@@ -1226,7 +1277,7 @@ export function SchematicCanvas({
         });
       }
     },
-    [dragging, store, lasso, bendDrag, clientToCanvas, scale],
+    [dragging, store, lasso, bendDrag, clientToCanvas, scale, wireConnect],
   );
 
   /** Everything the marquee currently covers, as multi-select keys. */
@@ -1476,17 +1527,19 @@ export function SchematicCanvas({
         >
           Fit selection
         </button>
-        {pendingWire && (
-          <span style={s.wireHint}>Click a port to finish the wire, or click it again to cancel.</span>
+        {wireConnect.active && (
+          <span style={s.wireHint}>
+            Drag to another port to finish the wire, or click one. Escape cancels.
+          </span>
         )}
         {pendingMate && (
           <span style={s.wireHint}>
             Click another connector or terminal to create the mate — click the same one again, or empty space, to cancel.
           </span>
         )}
-        {!pendingWire && !pendingMate && multiSelect.size === 0 && (
+        {!wireConnect.active && !pendingMate && multiSelect.size === 0 && (
           <span style={s.wireHint}>
-            Drag a wire to bend it · alt-click a bend to remove · drag empty space to lasso · alt-drag to pan
+            Drag port to port to wire · drag a wire to bend it · alt-click a bend to remove · drag empty space to lasso · alt-drag to pan
           </span>
         )}
         {multiSelect.size >= 1 && (
@@ -2059,10 +2112,11 @@ export function SchematicCanvas({
                         )}
                         <circle
                           cx={row.point.x} cy={row.point.y} r={5}
-                          fill={pendingWire?.componentId === node.componentId && pendingWire.rowId === row.rowId ? theme.color.accent : theme.color.nodeFill}
+                          fill={isWireSource(node.componentId, row.rowId) ? theme.color.accent : theme.color.nodeFill}
                           stroke={theme.color.accent} strokeWidth={1.5}
                           style={{ cursor: 'crosshair' }}
-                          onClick={(e) => { e.stopPropagation(); onRowClick(node, row); }}
+                          onMouseDown={(e) => onRowMouseDown(node, row, e)}
+                          onMouseUp={(e) => onRowMouseUp(node, row, e)}
                         />
                         {/* Direction toggle + impedance-matched chip (Connor:
                            "a clean ui interface on signal of each connector
@@ -2240,20 +2294,20 @@ export function SchematicCanvas({
                         {/* The wirable termination node (Connor: "a
                            termination connection node on the shield
                            itself"). Drawn as a port, and clicked like a port
-                           — onShieldNodeClick feeds the same
-                           pending-wire state machine every cavity uses, so a
-                           drain wire is drawn exactly the way any other wire
-                           is. Only the source-end node is wirable: the
+                           — it feeds the same connect gesture every cavity
+                           uses, so a drain wire is drawn exactly the way any
+                           other wire is. Only the source-end node is wirable: the
                            endpoint model has one shieldNode per group (a
                            shield is one conductor), so offering two would
                            imply two nets where there is one. */}
                         {shield.terminationNode && (
                           <circle
                             cx={mark.nodePoint.x} cy={mark.nodePoint.y} r={5}
-                            fill={pendingWire?.componentId === groupId ? theme.color.accent : theme.color.nodeFill}
+                            fill={isWireSource(groupId, SHIELD_ROW) ? theme.color.accent : theme.color.nodeFill}
                             stroke={theme.color.accent} strokeWidth={1.5}
                             style={{ cursor: mark.end === 'source' ? 'crosshair' : 'default' }}
-                            onClick={(e) => { if (mark.end === 'source') onShieldNodeClick(groupId, e); }}
+                            onMouseDown={(e) => { if (mark.end === 'source') onShieldNodeMouseDown(groupId, mark.nodePoint, e); }}
+                            onMouseUp={(e) => { if (mark.end === 'source') onShieldNodeMouseUp(groupId, e); }}
                           >
                             <title>
                               {mark.end === 'source'
@@ -2309,6 +2363,35 @@ export function SchematicCanvas({
                 />
               );
             })()}
+            {/* Preview for a wire being drawn. Routed by computeRoutedPath —
+                the same 45°-jog router that draws the committed wire — so
+                what the user sees really is what pressing the target port
+                produces. The loose end's exit direction is inferred from
+                which side of the source the cursor is on, since the cursor
+                is not a port and has none of its own. Dashed and
+                non-interactive: it must never eat the drop target's
+                pointer. */}
+            {wireConnect.preview && wireConnect.sourcePort && (
+              <g style={{ pointerEvents: 'none' }}>
+                <path
+                  d={computeRoutedPath(
+                    wireConnect.preview.from,
+                    wireConnect.sourcePort.dir ?? 'right',
+                    wireConnect.preview.to,
+                    wireConnect.preview.to.x >= wireConnect.preview.from.x ? 'left' : 'right',
+                    store.doc.settings.schematicExitStub === undefined
+                      ? {}
+                      : { stub: store.doc.settings.schematicExitStub },
+                  ).d}
+                  fill="none" stroke={theme.color.accent} strokeWidth={2}
+                  strokeDasharray="6 4" strokeLinecap="round" opacity={0.85}
+                />
+                <circle
+                  cx={wireConnect.preview.to.x} cy={wireConnect.preview.to.y} r={3.5}
+                  fill={theme.color.accent}
+                />
+              </g>
+            )}
           </svg>
 
           {groupBtnPos && (() => {

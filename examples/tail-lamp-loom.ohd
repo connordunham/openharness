@@ -1,0 +1,464 @@
+{
+  "bundles": {
+    "bnd-leg-lh": {
+      "custom": {},
+      "id": "bnd-leg-lh",
+      "label": "LH leg",
+      "length": 420,
+      "refdes": "B2",
+      "segmentLengths": [
+        230,
+        190
+      ],
+      "sourceId": "comp-branch",
+      "targetId": "comp-lamp-lh",
+      "waypoints": [
+        {
+          "x": 380,
+          "y": 90
+        }
+      ]
+    },
+    "bnd-leg-rh": {
+      "custom": {},
+      "id": "bnd-leg-rh",
+      "label": "RH leg",
+      "length": 460,
+      "refdes": "B3",
+      "segmentLengths": [
+        250,
+        210
+      ],
+      "sourceId": "comp-branch",
+      "targetId": "comp-lamp-rh",
+      "waypoints": [
+        {
+          "x": 380,
+          "y": 215
+        }
+      ]
+    },
+    "bnd-trunk": {
+      "custom": {},
+      "id": "bnd-trunk",
+      "label": "Trunk",
+      "length": 850,
+      "refdes": "B1",
+      "sourceId": "comp-body",
+      "targetId": "comp-branch"
+    }
+  },
+  "components": {
+    "comp-body": {
+      "cavities": [
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "1",
+          "direction": "out",
+          "id": "cav-body-1",
+          "signal": "TAIL_LH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "2",
+          "direction": "out",
+          "id": "cav-body-2",
+          "signal": "TAIL_RH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "3",
+          "direction": "out",
+          "id": "cav-body-3",
+          "signal": "STOP_LH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "4",
+          "direction": "out",
+          "id": "cav-body-4",
+          "signal": "STOP_RH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "5",
+          "global": true,
+          "id": "cav-body-5",
+          "signal": "GND"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "6",
+          "global": true,
+          "id": "cav-body-6",
+          "signal": "GND"
+        }
+      ],
+      "custom": {},
+      "id": "comp-body",
+      "label": "Body harness",
+      "layoutPosition": {
+        "x": 60,
+        "y": 150
+      },
+      "partId": "part-conn-dt06-6s",
+      "refdes": "C1",
+      "schematicPosition": {
+        "x": 120,
+        "y": 140
+      },
+      "type": "connector"
+    },
+    "comp-branch": {
+      "custom": {},
+      "id": "comp-branch",
+      "layoutPosition": {
+        "x": 280,
+        "y": 150
+      },
+      "refdes": "BP1",
+      "type": "branchPoint"
+    },
+    "comp-lamp-lh": {
+      "cavities": [
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "1",
+          "direction": "in",
+          "id": "cav-lh-1",
+          "signal": "TAIL_LH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "2",
+          "direction": "in",
+          "id": "cav-lh-2",
+          "signal": "STOP_LH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "3",
+          "global": true,
+          "id": "cav-lh-3",
+          "signal": "GND"
+        },
+        {
+          "custom": {},
+          "designation": "4",
+          "id": "cav-lh-4",
+          "sealPartId": "part-seal-114017"
+        }
+      ],
+      "custom": {},
+      "id": "comp-lamp-lh",
+      "label": "LH lamp",
+      "layoutPosition": {
+        "x": 470,
+        "y": 60
+      },
+      "partId": "part-conn-dt06-4s",
+      "refdes": "C2",
+      "schematicPosition": {
+        "x": 780,
+        "y": 40
+      },
+      "type": "connector"
+    },
+    "comp-lamp-rh": {
+      "cavities": [
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "1",
+          "direction": "in",
+          "id": "cav-rh-1",
+          "signal": "TAIL_RH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "2",
+          "direction": "in",
+          "id": "cav-rh-2",
+          "signal": "STOP_RH"
+        },
+        {
+          "contactPartId": "part-contact-0462-201-16141",
+          "custom": {},
+          "designation": "3",
+          "global": true,
+          "id": "cav-rh-3",
+          "signal": "GND"
+        },
+        {
+          "custom": {},
+          "designation": "4",
+          "id": "cav-rh-4",
+          "sealPartId": "part-seal-114017"
+        }
+      ],
+      "custom": {},
+      "id": "comp-lamp-rh",
+      "label": "RH lamp",
+      "layoutPosition": {
+        "x": 470,
+        "y": 250
+      },
+      "partId": "part-conn-dt06-4s",
+      "refdes": "C3",
+      "schematicPosition": {
+        "x": 780,
+        "y": 320
+      },
+      "type": "connector"
+    }
+  },
+  "formatVersion": 1,
+  "groups": {},
+  "mates": {},
+  "meta": {
+    "createdAt": "2026-09-05T00:00:00.000Z",
+    "custom": {},
+    "id": "example-tail-lamp-loom",
+    "modifiedAt": "2026-09-05T00:00:00.000Z",
+    "name": "Rear Lamp Loom",
+    "readOnly": false,
+    "revision": 1
+  },
+  "notes": {},
+  "parts": {
+    "part-conn-dt06-4s": {
+      "configurations": [],
+      "custom": {},
+      "description": "DT series 4-way plug, socket contacts",
+      "designationTemplate": {
+        "kind": "numbers",
+        "start": 1
+      },
+      "gender": "female",
+      "hasShell": true,
+      "housingShape": "rectangular",
+      "id": "part-conn-dt06-4s",
+      "kind": "connector",
+      "manufacturer": "Deutsch (TE)",
+      "numberOfCavities": 4,
+      "partNumber": "DT06-4S",
+      "price": 3.48,
+      "url": "https://www.te.com/usa-en/product-DT06-4S.html",
+      "vendorPartNumber": "A29099-ND"
+    },
+    "part-conn-dt06-6s": {
+      "configurations": [],
+      "custom": {},
+      "description": "DT series 6-way plug, socket contacts",
+      "designationTemplate": {
+        "kind": "numbers",
+        "start": 1
+      },
+      "gender": "female",
+      "hasShell": true,
+      "housingShape": "rectangular",
+      "id": "part-conn-dt06-6s",
+      "kind": "connector",
+      "manufacturer": "Deutsch (TE)",
+      "numberOfCavities": 6,
+      "partNumber": "DT06-6S",
+      "price": 4.12,
+      "url": "https://www.te.com/usa-en/product-DT06-6S.html",
+      "vendorPartNumber": "A29100-ND"
+    },
+    "part-contact-0462-201-16141": {
+      "custom": {},
+      "description": "DT size 16 solid socket contact, 0.5–1.0 mm²",
+      "id": "part-contact-0462-201-16141",
+      "kind": "contact",
+      "manufacturer": "Deutsch (TE)",
+      "partNumber": "0462-201-16141",
+      "price": 0.31
+    },
+    "part-seal-114017": {
+      "custom": {},
+      "description": "DT cavity plug for unused sockets",
+      "id": "part-seal-114017",
+      "kind": "seal",
+      "manufacturer": "Deutsch (TE)",
+      "partNumber": "114017",
+      "price": 0.08
+    },
+    "part-wire-0-5-gxl": {
+      "capacitancePerLength": 1e-10,
+      "currentRating": 11,
+      "custom": {},
+      "description": "0.5 mm² (20 AWG) GXL cross-linked primary wire",
+      "gauge": {
+        "unit": "mm2",
+        "value": 0.5
+      },
+      "id": "part-wire-0-5-gxl",
+      "insulation": "XLPE",
+      "kind": "wire",
+      "manufacturer": "Champlain Cable",
+      "outerDiameter": 1.8,
+      "partNumber": "GXL-20-BK",
+      "price": 0.00024,
+      "resistancePerLength": 0.0000371,
+      "strandCount": 19,
+      "tempRating": {
+        "max": 125,
+        "min": -50
+      },
+      "voltageRating": 60
+    },
+    "part-wire-1-0-gxl": {
+      "capacitancePerLength": 1e-10,
+      "currentRating": 19,
+      "custom": {},
+      "description": "1.0 mm² (16 AWG) GXL cross-linked primary wire",
+      "gauge": {
+        "unit": "mm2",
+        "value": 1
+      },
+      "id": "part-wire-1-0-gxl",
+      "insulation": "XLPE",
+      "kind": "wire",
+      "manufacturer": "Champlain Cable",
+      "outerDiameter": 2.3,
+      "partNumber": "GXL-16-BK",
+      "price": 0.00038,
+      "resistancePerLength": 0.0000187,
+      "strandCount": 19,
+      "tempRating": {
+        "max": 125,
+        "min": -50
+      },
+      "voltageRating": 60
+    }
+  },
+  "settings": {
+    "currency": "USD",
+    "formboard": {
+      "enabled": false,
+      "scale": 1
+    },
+    "gaugeUnit": "mm2",
+    "lengthUnit": "mm",
+    "refdesPrefixes": {},
+    "showParasitics": false
+  },
+  "wireGroups": {},
+  "wires": {
+    "wire-gnd-lh": {
+      "color": "black",
+      "custom": {},
+      "id": "wire-gnd-lh",
+      "partId": "part-wire-1-0-gxl",
+      "refdes": "W5",
+      "source": {
+        "cavityId": "cav-body-5",
+        "componentId": "comp-body",
+        "kind": "cavity"
+      },
+      "target": {
+        "cavityId": "cav-lh-3",
+        "componentId": "comp-lamp-lh",
+        "kind": "cavity"
+      }
+    },
+    "wire-gnd-rh": {
+      "color": "black",
+      "custom": {},
+      "id": "wire-gnd-rh",
+      "partId": "part-wire-1-0-gxl",
+      "refdes": "W6",
+      "source": {
+        "cavityId": "cav-body-6",
+        "componentId": "comp-body",
+        "kind": "cavity"
+      },
+      "target": {
+        "cavityId": "cav-rh-3",
+        "componentId": "comp-lamp-rh",
+        "kind": "cavity"
+      }
+    },
+    "wire-stop-lh": {
+      "color": "red",
+      "custom": {},
+      "id": "wire-stop-lh",
+      "partId": "part-wire-0-5-gxl",
+      "refdes": "W3",
+      "source": {
+        "cavityId": "cav-body-3",
+        "componentId": "comp-body",
+        "kind": "cavity"
+      },
+      "target": {
+        "cavityId": "cav-lh-2",
+        "componentId": "comp-lamp-lh",
+        "kind": "cavity"
+      }
+    },
+    "wire-stop-rh": {
+      "color": "red",
+      "custom": {},
+      "id": "wire-stop-rh",
+      "partId": "part-wire-0-5-gxl",
+      "refdes": "W4",
+      "source": {
+        "cavityId": "cav-body-4",
+        "componentId": "comp-body",
+        "kind": "cavity"
+      },
+      "stripeColor": "white",
+      "target": {
+        "cavityId": "cav-rh-2",
+        "componentId": "comp-lamp-rh",
+        "kind": "cavity"
+      }
+    },
+    "wire-tail-lh": {
+      "color": "brown",
+      "custom": {},
+      "id": "wire-tail-lh",
+      "partId": "part-wire-0-5-gxl",
+      "refdes": "W1",
+      "source": {
+        "cavityId": "cav-body-1",
+        "componentId": "comp-body",
+        "kind": "cavity"
+      },
+      "target": {
+        "cavityId": "cav-lh-1",
+        "componentId": "comp-lamp-lh",
+        "kind": "cavity"
+      }
+    },
+    "wire-tail-rh": {
+      "color": "brown",
+      "custom": {},
+      "id": "wire-tail-rh",
+      "partId": "part-wire-0-5-gxl",
+      "refdes": "W2",
+      "source": {
+        "cavityId": "cav-body-2",
+        "componentId": "comp-body",
+        "kind": "cavity"
+      },
+      "stripeColor": "white",
+      "target": {
+        "cavityId": "cav-rh-1",
+        "componentId": "comp-lamp-rh",
+        "kind": "cavity"
+      }
+    }
+  }
+}

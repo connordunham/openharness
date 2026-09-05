@@ -41,6 +41,9 @@ import { LayoutCanvas } from './LayoutCanvas.js';
 import { InterconnectTablePane } from './InterconnectTablePane.js';
 import { applyInterconnectRow, parseInterconnectCsvRow } from './interconnectEdit.js';
 import { theme } from './theme.js';
+// Inlined at build time (see openExample) — not read from disk, so it needs no
+// IPC and ships inside the packaged renderer bundle.
+import exampleHarness from '../../../examples/tail-lamp-loom.ohd?raw';
 
 type PaneView = 'schematic' | 'layout' | 'table' | 'bom' | 'overview';
 type SplitLayout = 'single' | 'split-h' | 'split-v' | 'quad';
@@ -133,6 +136,31 @@ export function App() {
     setImportWarnings([]);
     setSourcePath(null);
     replaceDocument(createEmptyDocument('Untitled Harness'));
+  }, [replaceDocument]);
+
+  /**
+   * Open the bundled example harness (`examples/tail-lamp-loom.ohd`).
+   *
+   * The document is inlined into the renderer bundle at build time by Vite's
+   * `?raw` import rather than read from disk, which is what keeps the preload
+   * bridge at its deliberate two calls (main.ts's header: "two generic calls
+   * instead of growing a new IPC channel per feature"). It also means the
+   * example travels inside the packaged app with no electron-builder
+   * extraResources entry to keep in sync.
+   *
+   * `sourcePath` stays null on purpose: the example is a starting point, not
+   * a file the user opened, so Save must prompt for a location rather than
+   * offering to overwrite something inside the installation directory.
+   */
+  const openExample = useCallback(() => {
+    setError(null);
+    setImportWarnings([]);
+    setSourcePath(null);
+    try {
+      replaceDocument(parseDocument(exampleHarness));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }, [replaceDocument]);
 
   const load = useCallback(
@@ -431,6 +459,7 @@ export function App() {
 
         <div style={styles.toolbarGroup}>
           <button style={styles.button} disabled={busy} onClick={newDocument}>New</button>
+          <button style={styles.button} disabled={busy} onClick={openExample} title="Load the bundled rear lamp loom example">Example</button>
           <button style={styles.button} disabled={busy} onClick={() => void load('vendor-json')}>Import vendor JSON…</button>
           <button style={styles.button} disabled={busy} onClick={() => void load('ohd')}>Open .ohd…</button>
           <button style={styles.buttonPrimary} disabled={!store} onClick={() => void saveOhd()}>Save as .ohd…</button>
@@ -497,13 +526,21 @@ export function App() {
           <div style={styles.emptyMark}>OH</div>
           <h2 style={styles.emptyTitle}>No document open</h2>
           <p style={styles.emptyBody}>
-            Start a new harness, import a vendor JSON export, or open a previously-saved .ohd
-            file to begin.
+            Open the example harness to see a routed document in every pane, or start a new
+            one. You can also import a vendor JSON export or a previously-saved .ohd file.
           </p>
           <div style={styles.emptyActions}>
-            <button style={styles.buttonPrimary} onClick={newDocument}>New harness</button>
+            {/* The example leads: an empty canvas is a bad first ten minutes for
+                CAD software, and every pane (Schematic, Layout, Table, BOM,
+                Diagnostics) has something to show the moment this is loaded. */}
+            <button style={styles.buttonPrimary} onClick={openExample}>Open example harness</button>
+            <button style={styles.button} onClick={newDocument}>New harness</button>
             <button style={styles.button} onClick={() => void load('vendor-json')}>Import vendor JSON…</button>
           </div>
+          <p style={styles.emptyFootnote}>
+            The example is a rear lamp loom — 3 connectors, 6 wires, a branch point and three
+            authored bundle lengths.
+          </p>
         </div>
       ) : splitLayout === 'single' ? (
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
@@ -660,7 +697,8 @@ const styles = {
   },
   emptyTitle: { margin: 0, fontSize: 17, fontWeight: 600, color: theme.color.textStrong },
   emptyBody: { color: theme.color.textMuted, fontSize: 13.5, maxWidth: 360, margin: '4px 0 20px 0', lineHeight: 1.5 },
-  emptyActions: { display: 'flex', gap: 8 },
+  emptyActions: { display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' },
+  emptyFootnote: { color: theme.color.textFaint, fontSize: 12, maxWidth: 360, margin: '18px 0 0 0', lineHeight: 1.5 },
   content: { flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 900, margin: '0 auto', width: '100%', boxSizing: 'border-box' },
   panel: {
     border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.panel, padding: 18,
