@@ -28,7 +28,7 @@ git clone https://github.com/connordunham/openharness.git
 cd openharness
 npm install     # this also compiles the workspace libraries — see below
 npm start       # builds the app and launches it
-npm test        # 196 tests
+npm test        # 626 tests
 ```
 
 Use **npm**, not pnpm or yarn. `pnpm-workspace.yaml` is checked in but there

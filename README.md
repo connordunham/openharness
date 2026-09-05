@@ -1,12 +1,33 @@
 # OpenHarness
 
-A local, automation-first wire harness CAD tool. Electron desktop app plus a
-TypeScript monorepo (`core` / `io` / `render` / `cli`) that all share one
-document model.
+**Wire harness CAD that runs on your machine, saves to a file you can diff,
+and lets your own code drive it.**
+
+Harness design tools are hosted subscription products. That rules them out
+entirely for anyone whose harness IP cannot leave the network, puts your
+drawings in someone else's store instead of the version control you already
+run, and leaves no seam for your own scripts. OpenHarness is the other
+option: a real desktop application, MIT licensed, with a documented
+git-diffable file format and a CLI that can check a harness in CI.
+
+![The Schematic pane — connectors, signals, 45° auto-routed wires](docs/images/schematic.png)
+
+Four panes over one document model. Edit any of them and the rest follow.
+
+![Schematic, Layout, interconnect table and BOM side by side](docs/images/panes.png)
 
 - Full design spec: [`docs/HARNESS-DESIGNER-SPEC.md`](docs/HARNESS-DESIGNER-SPEC.md)
 - Review notes and open decisions: [`docs/SPEC-REVIEW-RECOMMENDATIONS.md`](docs/SPEC-REVIEW-RECOMMENDATIONS.md)
 - Running build log / session context: [`docs/00-SESSION-CONTEXT.md`](docs/00-SESSION-CONTEXT.md)
+
+## Try it in two minutes
+
+Take an installer from the [Releases
+page](https://github.com/connordunham/openharness/releases) — no Node, no
+build toolchain — launch it, and click **Open example harness**. That loads
+[`examples/tail-lamp-loom.ohd`](examples/tail-lamp-loom.ohd): a rear lamp
+loom with three connectors, six wires and a branch point, already routed, so
+every pane has something in it. Full install notes are [below](#install-it).
 
 ## Status
 
@@ -27,7 +48,10 @@ Panes that work today:
 - **Layout** — connector/component glyphs with auto-orientation and auto-place,
   flowy bundle routing with per-segment lengths, bundle waypoints, signal-name
   hover tooltips, a closable bundle card, and pass-through resistors/diodes
-  drawn inline on the merged bundle line.
+  drawn inline on the merged bundle line. A **Select / Route** tool switcher
+  (`V` / `C`), and a routing sidebar that leads with route health — how many
+  wires have a path through the bundle graph, how many have a measured rather
+  than estimated length, and which ones still need routing.
 - **Table** — an interconnect table that is bidirectional with the Schematic:
   edit either and the other follows. CSV import/export, per-signal direction
   (in / out / bidirectional) and an impedance-matched flag with a triangle
@@ -40,8 +64,8 @@ Panes that work today:
 - **Diagnostics** — live DRC output from the derive pipeline.
 
 Layout pans by click-drag; Schematic reserves left-drag on empty canvas for
-the marquee, so it pans with alt-drag or the middle button. Both pan with the
-mouse wheel. Zoom is a known gap and is deliberately deferred.
+the marquee, so it pans with alt-drag or the middle button. Both zoom on the
+mouse wheel (pinch on a trackpad) and have fit-to-view and fit-to-selection.
 
 Verified by actually building and launching the app on Windows and driving it
 with real mouse input — not just typechecked. That process caught a real bug
@@ -118,8 +142,8 @@ gauge would fit the contact. See [`docs/DOMAIN-DECISIONS.md`](docs/DOMAIN-DECISI
 D1. Rules that have not yet been through that process are marked as
 unvalidated rather than presented as established practice.
 
-**196 tests pass** across `core` (82), `io` (30), `cli` (21), and `render`
-(63). Along the way, fixing a Map-iteration-order false positive in the `.ohd`
+**626 tests pass** across `core`, `parts`, `io`, `cli`, `render` and `app`.
+Along the way, fixing a Map-iteration-order false positive in the `.ohd`
 round-trip test surfaced a real (if minor) issue: BOM/diagnostics/nets output
 order depended on incidental object-insertion order, which would have made
 exported CSVs and golden-file diffs non-reproducible for no functional reason —
@@ -140,10 +164,12 @@ packages/
   cli/          openharness              — import / validate / export --bom
   app/          @openharness/app         — Electron desktop app: Schematic, Layout, Table, Parts, Diagnostics
   render/       @openharness/render      — SVG scene builders shared by the canvases
+  parts/        @openharness/parts       — SQLite master parts library: versioning, suppliers, price history
   automation/   @openharness/automation  — plugin host (TODO, Phase 5)
   mcp/          @openharness/mcp         — local MCP server (TODO, Phase 5)
 automations/    — your own automations live here (spec §8.2)
 docs/           — design spec, review notes, session context
+examples/       — the bundled example harness (File > Example)
 fixtures/       — golden-file test documents (spec §13)
 ```
 
@@ -252,11 +278,12 @@ Run these from the repo root. Each one builds whatever it needs first.
 |---|---|
 | `npm start` | Build and launch the desktop app |
 | `npm run dev` | Vite dev server + Electron with watch-mode rebuilds |
-| `npm test` | 196 tests (`vitest run`) |
+| `npm test` | 626 tests (`vitest run`) |
 | `npm run typecheck` | `tsc -b` across the project references |
 | `npm run lint` | ESLint |
 | `npm run build` | Compile every package and bundle the renderer |
 | `npm run doctor` | Diagnose a broken environment |
+| `npm run build:example` | Regenerate `examples/tail-lamp-loom.ohd` |
 | `npm run clean` | Delete all build output — for when a stale build misleads you |
 | `npm run package` | Build installers for your current OS into `release/` |
 
@@ -337,31 +364,44 @@ to send a patch.
 - [`docs/agents/`](docs/agents/) — briefs for the scoped agents that do the
   work: implement, review, verify, audit, maintain.
 
-Shipped since the last roadmap: a repeatable part parameter list replacing the
-single max-rating slot; parasitics on components and per-unit-length R/C on
-wire parts; marquee and shift-click multi-select; twisted decoupled from group
-kind with an IEEE 315 / IEC 60617-3 setting; and the shield overhaul
-(positioned wrap, per-end terminations, a wirable termination node, backshell
-BS contacts, and a costing model that decides whether the shield gets a BOM
-line). Drag-to-bend manual wire routing came back alongside them.
+Shipped since the last roadmap, closing **M1 ("Trustworthy") in
+`docs/TECHNICAL-ROADMAP.md`**: connector and terminal **mates** with
+cavity-count/gender/size validation — the gap that made a bulkhead's two
+halves come out as electrically separate nets — **wire-gauge-vs-contact
+checking** with the mm² summation rule, **zoom** with fit-to-view and
+fit-to-selection, plus rotate, cavity insert/delete and jumper wires. Before
+those: a repeatable part parameter list replacing the single max-rating slot;
+parasitics on components and per-unit-length R/C on wire parts; marquee and
+shift-click multi-select; twisted decoupled from group kind with an IEEE 315 /
+IEC 60617-3 setting; the shield overhaul (positioned wrap, per-end
+terminations, a wirable termination node, backshell BS contacts, and a costing
+model that decides whether the shield gets a BOM line); and a SQLite master
+parts library with part versioning, suppliers and price history.
+
+Most recently, both canvases got a **shared routing gesture**: wires and
+bundles are both drawn either by dragging from one port to another or by
+clicking both ends, with a live preview of what you are about to create,
+highlighting on the targets that would actually accept it, and Escape to
+cancel.
+
+![Routing a bundle — preview line follows the cursor, valid targets ring up](docs/images/routing.png)
 
 Next, in order — see `docs/ROADMAP.md` for the reasoning and the full table:
 
-1. **Drawing correctness** — zoom; mates (connector↔connector and
-   terminal↔cavity, with the cavity-count/gender/size validation that follows);
-   wire-gauge-vs-contact checking with the mm² summation rule; rotate; cavity
-   insert/delete; jumper wires; view toggles.
-2. **Typed part properties** — contact, terminal, splice, diode and resistor
+1. **Typed part properties** — contact, terminal, splice, diode and resistor
    fields, kept alongside the open `parameters[]` list rather than replacing
    it, because validation needs typed fields and datasheets need open ones.
-3. **Bulk editing** — global search, type-to-connect destinations, select-wires-
+2. **Current capacity and bend radius** — the two rules the resident harness
+   engineer named as the highest-value missing checks (`docs/DOMAIN-DECISIONS.md` D4).
+3. **Output** — PDF with a title block, XLSX wiring table with per-connector
+   pinout sheets, and vendor JSON export to match the existing importer. This
+   is the adoption threshold: until it lands, a harness designed here cannot
+   be handed to someone who will build it.
+4. **Bulk editing** — global search, type-to-connect destinations, select-wires-
    on-net, auto-layout, add-splice-from-selection, inline connectors, groups.
-4. **Output** — PDF with a title block, XLSX wiring table with per-connector
-   pinout sheets, and vendor JSON export to match the existing importer.
 5. **Formboard** — 1:1 scale layout, panel grid, bend radii, to-scale
    snapping, per-panel PDF.
-6. **Local parts library** — a version-controllable catalog with real sync state.
-7. **Automation surface** — the MCP server, the automation host, and the CLI's
+6. **Automation surface** — the MCP server, the automation host, and the CLI's
    `run`/`query`/`diff`/`doctor`.
 
 Also outstanding: **dependency upgrades** — Electron 31, Vite 5 and Vitest 2

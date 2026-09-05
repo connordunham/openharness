@@ -3995,7 +3995,13 @@ function ConfigurationCard({
 }
 
 const s = {
-  root: { display: 'flex', flexDirection: 'column', height: '100%', background: theme.color.canvasBg },
+  /* `flex: 1, minWidth: 0` matters as much as the height here. App.tsx renders
+     every pane inside a flex ROW; without a flex basis this root sized itself
+     to its CONTENT, so any document wider than the window pushed the pane past
+     the window edge — taking the sidebar off-screen and leaving fit-to-view
+     measuring a container far wider than what was actually visible. minWidth:0
+     is the half that lets a flex item shrink below its content width at all. */
+  root: { display: 'flex', flexDirection: 'column', height: '100%', flex: 1, minWidth: 0, background: theme.color.canvasBg },
   addToolbar: {
     display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px',
     borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexWrap: 'wrap',
@@ -4014,7 +4020,10 @@ const s = {
     cursor: enabled ? 'pointer' : 'default', opacity: enabled ? 1 : 0.45,
   }),
   wireHint: { color: theme.color.accent, fontSize: 12, marginLeft: 8, fontWeight: 500 },
-  canvasScroll: { flex: 1, overflow: 'auto', cursor: 'grab' },
+  /* userSelect none: every gesture here is a drag over an SVG that contains
+     real text (bundle labels, refdes, cavity names), so without it a drag
+     paints the canvas with blue text selection and leaves it there. */
+  canvasScroll: { flex: 1, minWidth: 0, overflow: 'auto', cursor: 'grab', userSelect: 'none' },
   canvasSvg: { display: 'block' },
 
   derivedNote: { fontSize: 11, color: theme.color.textFaint, lineHeight: 1.45 },

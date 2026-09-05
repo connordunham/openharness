@@ -1021,7 +1021,10 @@ export function LayoutCanvas({
       // In `route` the whole node body is a bundle source, which is the
       // difference between the two tools.
       if (connect.active || tool === 'route') {
-        setSelected({ kind: 'component', id: component.id });
+        // Deliberately does NOT select: while routing, the user's intent is
+        // unambiguous, and popping the component inspector over the canvas
+        // buries the drop targets they are aiming at. The gesture's own
+        // source highlight already shows what is picked.
         connect.press(component.id, pos, e.clientX, e.clientY);
         return;
       }
@@ -2196,7 +2199,13 @@ export function BundleInspector({
 }
 
 const s = {
-  root: { display: 'flex', flexDirection: 'column', height: '100%', background: theme.color.canvasBg },
+  /* `flex: 1, minWidth: 0` matters as much as the height here. App.tsx renders
+     every pane inside a flex ROW; without a flex basis this root sized itself
+     to its CONTENT, so any document wider than the window pushed the pane past
+     the window edge — taking the sidebar off-screen and leaving fit-to-view
+     measuring a container far wider than what was actually visible. minWidth:0
+     is the half that lets a flex item shrink below its content width at all. */
+  root: { display: 'flex', flexDirection: 'column', height: '100%', flex: 1, minWidth: 0, background: theme.color.canvasBg },
   toolbar: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexWrap: 'wrap' },
   toolbarLabel: { fontSize: 11, fontWeight: 600, color: theme.color.textFaint, textTransform: 'uppercase', letterSpacing: 0.4, marginRight: 4 },
   toolbarBtn: { padding: '6px 11px', border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, background: theme.color.surface, color: theme.color.textStrong, cursor: 'pointer', fontSize: 12.5, fontWeight: 500 },
@@ -2220,7 +2229,10 @@ const s = {
   hintMuted: { color: theme.color.textFaint, fontSize: 11.5, marginLeft: 6 },
 
   body: { flex: 1, display: 'flex', minHeight: 0 },
-  canvasScroll: { flex: 1, overflow: 'auto', cursor: 'grab' },
+  /* userSelect none: every gesture here is a drag over an SVG that contains
+     real text (bundle labels, refdes, cavity names), so without it a drag
+     paints the canvas with blue text selection and leaves it there. */
+  canvasScroll: { flex: 1, minWidth: 0, overflow: 'auto', cursor: 'grab', userSelect: 'none' },
   svg: { display: 'block' },
 
   sidebar: { width: 220, borderLeft: `1px solid ${theme.color.border}`, background: theme.color.surface, padding: 14, overflow: 'auto', flexShrink: 0 },

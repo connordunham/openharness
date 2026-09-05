@@ -194,7 +194,13 @@ export function InterconnectTablePane({ store, hoveredComponentId, onHoverCompon
 }
 
 const s = {
-  root: { display: 'flex', flexDirection: 'column', height: '100%', background: theme.color.canvasBg },
+  /* `flex: 1, minWidth: 0` matters as much as the height here. App.tsx renders
+     every pane inside a flex ROW; without a flex basis this root sized itself
+     to its CONTENT, so any document wider than the window pushed the pane past
+     the window edge — taking the sidebar off-screen and leaving fit-to-view
+     measuring a container far wider than what was actually visible. minWidth:0
+     is the half that lets a flex item shrink below its content width at all. */
+  root: { display: 'flex', flexDirection: 'column', height: '100%', flex: 1, minWidth: 0, background: theme.color.canvasBg },
   toolbar: {
     display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
     borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexWrap: 'wrap',

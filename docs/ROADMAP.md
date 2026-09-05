@@ -17,16 +17,21 @@ These are things that make a drawing wrong or unusable, not merely less
 convenient. Everything here is small-to-medium and mostly builds on model
 fields that already exist.
 
+**Status: largely complete** — mates, mate validation, wire-gauge-vs-contact,
+zoom, rotate, cavity operations and jumper wires all shipped (T01–T05), which
+is what closes M1 in `TECHNICAL-ROADMAP.md`. Connector/note width, orthogonal
+routing, alignment guides and view toggles remain.
+
 | Feature | Reference behaviour | Status | Notes |
 |---|---|---|---|
-| **Zoom** | Scroll to zoom (mouse) / pinch (trackpad), fit-to-view, fit-to-selection | **gap** | Already the one deliberately deferred item. Every pixel-delta drag in both canvases must divide by the zoom factor. `clientToCanvas` in SchematicCanvas is already written against `getBoundingClientRect` and survives a transform; Layout's drag paths are not. |
-| **Mates** | Connector↔connector, terminal↔terminal, terminal↔cavity. Cavities map 1:1 and join the same net | **gap** | The single largest electrical-model gap. `ConnectorPart.matingPartId` exists but there is no `Mate` entity, so a bulkhead or pass-through connector cannot be modelled at all — the two halves are separate nets. Needs a `mates` array, net-extraction participation, and the validation below. |
-| **Mate validation** | *Cavities do not match*; *Genders do not match*; terminal compatibility matrix (Ferrule→cavity max-one; Ring↔Ring/Spade/Stud size-checked; Quick Connect male↔female size-checked max-one) | **gap** | Follows the `Mate` entity directly. |
-| **Wire gauge vs contact** | Warns when wire gauge is outside the contact's min/max. Multiple wires in one cavity are **summed**: convert each to mm², add, convert back to the document gauge unit | **gap** | The mm² summation rule is the non-obvious half and the reason this can't be approximated. Requires typed min/max gauge on `ContactPart` (Phase 2). |
-| **Rotate 90°** | `R`, or right-click → Rotate. Schematic only. Connectors and terminals | **model** | `ComponentBase.rotation` exists and is never read. |
-| **Connector / note width** | Right-click → Width → percentage. Node widths 60/90/150/210/270/390 units | **partial** | `Connector.widthPercent` exists unused; `BOX_WIDTH` is a fixed 160. Long signal names currently overflow. |
-| **Cavity operations** | Right-click a cavity → move up / move down / add below / delete. `Tab`/`Shift+Tab` between labels | **partial** | Only a `− N +` trailing stepper today, so a cavity can't be inserted or removed mid-list. |
-| **Jumper wires** | Drag cavity→cavity within one connector; length zero | **gap** | Routing already has a `jumper` status, but it is reached only via cable cores. |
+| **Zoom** | Scroll to zoom (mouse) / pinch (trackpad), fit-to-view, fit-to-selection | **done** | T04. Both canvases, with fit-to-view and fit-to-selection. |
+| **Mates** | Connector↔connector, terminal↔terminal, terminal↔cavity. Cavities map 1:1 and join the same net | **done** | T02. Was the single largest electrical-model gap: a bulkhead's two halves used to come out as separate nets. |
+| **Mate validation** | *Cavities do not match*; *Genders do not match*; terminal compatibility matrix (Ferrule→cavity max-one; Ring↔Ring/Spade/Stud size-checked; Quick Connect male↔female size-checked max-one) | **done** | T02. |
+| **Wire gauge vs contact** | Warns when wire gauge is outside the contact's min/max. Multiple wires in one cavity are **summed**: convert each to mm², add, convert back to the document gauge unit | **done** | T01 + T03, mm² summation included. |
+| **Rotate 90°** | `R`, or right-click → Rotate. Schematic only. Connectors and terminals | **done** | T05. |
+| **Connector / note width** | Right-click → Width → percentage. Node widths 60/90/150/210/270/390 units | **done** | T05 — discrete scaling (75/100/125/150/200%) via `widthPercent`. |
+| **Cavity operations** | Right-click a cavity → move up / move down / add below / delete. `Tab`/`Shift+Tab` between labels | **done** | T05. |
+| **Jumper wires** | Drag cavity→cavity within one connector; length zero | **done** | T05. |
 | **Orthogonal routing** | Right-click wire → Make orthogonal, or `O` | **gap** | Complements the 45° auto-router and the new manual bends. |
 | **Layout-point alignment guides** | Guide lines appear when points align horizontally, vertically or at 45° | **gap** | Applies to the drag-to-bend handles just shipped. |
 | **View toggles** | Show parts / coverings / component IDs / warnings; dash undefined routes; dash empty bundles; highlight nets | **partial** | Only cross-pane hover highlighting exists. "Dash undefined routes" is load-bearing: a dashed wire *means* "not yet routed through a bundle", which OpenHarness computes already (`LengthStatus`) but never shows. |
