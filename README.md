@@ -24,10 +24,18 @@ Four panes over one document model. Edit any of them and the rest follow.
 
 Take an installer from the [Releases
 page](https://github.com/connordunham/openharness/releases) — no Node, no
-build toolchain — launch it, and click **Open example harness**. That loads
-[`examples/tail-lamp-loom.ohd`](examples/tail-lamp-loom.ohd): a rear lamp
-loom with three connectors, six wires and a branch point, already routed, so
-every pane has something in it. Full install notes are [below](#install-it).
+build toolchain needed. Full install notes are [below](#install-it).
+
+Then open the example harness: **Open example harness** on the start screen,
+or **Example** in the toolbar. That loads
+[`examples/tail-lamp-loom.ohd`](examples/tail-lamp-loom.ohd) — a rear lamp
+loom with three connectors, six wires and a branch point, already routed —
+so every pane has something in it from the first click.
+
+> The bundled example arrives in the next release. On `v0.1.0` you can still
+> open it: download
+> [`examples/tail-lamp-loom.ohd`](examples/tail-lamp-loom.ohd) from this repo
+> and use **Open .ohd…**.
 
 ## Status
 
